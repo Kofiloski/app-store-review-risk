@@ -2,7 +2,19 @@
 
 `app-store-review-risk` is a Codex skill and static scanner for reviewing Apple-platform app repositories before App Store, TestFlight, or notarization submission.
 
-It helps identify likely review-risk areas in code, configuration, metadata, privacy declarations, StoreKit usage, entitlements, account flows, user-generated content, and platform-specific UX expectations. It is a preflight aid, not an approval guarantee.
+It helps identify likely review-risk areas in code, configuration, metadata, privacy declarations, StoreKit usage, entitlements, account flows, user-generated content, and platform-specific UX expectations.
+
+## Important Notice
+
+This tool does not guarantee App Store approval, TestFlight approval, or notarization acceptance. It is only intended to help teams find possible issues earlier and prepare a cleaner submission.
+
+Always verify decisions against Apple's official documentation and current requirements:
+
+- App Review Guidelines: https://developer.apple.com/app-store/review/guidelines/
+- Human Interface Guidelines: https://developer.apple.com/design/human-interface-guidelines
+- Apple Developer Documentation and App Store Connect guidance for platform-specific implementation, privacy, metadata, entitlement, and distribution requirements
+
+Treat scanner findings as review leads, not final policy determinations. Apple Review, Apple documentation, and App Store Connect configuration remain the source of truth.
 
 ## What It Covers
 
@@ -12,11 +24,6 @@ It helps identify likely review-risk areas in code, configuration, metadata, pri
 - `Info.plist`, entitlements, `PrivacyInfo.xcprivacy`, StoreKit, subscriptions, permissions, tracking, Sign in with Apple, account deletion, and UGC risk signals
 - App Store Connect artifact gaps such as screenshots, review notes, privacy answers, support URLs, and demo access
 - Target-aware scanning for projects with tests, extensions, examples, admin tools, or multiple app targets
-
-The review workflow uses Apple's official guidance as the baseline:
-
-- App Review Guidelines: https://developer.apple.com/app-store/review/guidelines/
-- Human Interface Guidelines: https://developer.apple.com/design/human-interface-guidelines
 
 ## Install
 
@@ -74,7 +81,7 @@ python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --fail-on high
 - `markdown` is useful for manual review reports.
 - `json` includes the full scanner result for automation.
 
-Scanner findings are leads. Inspect the cited files and App Store Connect artifacts before treating a result as a real rejection risk.
+Inspect the cited files and App Store Connect artifacts before treating a result as a real rejection risk.
 
 ## Skill Layout
 
@@ -86,7 +93,7 @@ Scanner findings are leads. Inspect the cited files and App Store Connect artifa
 ## Limitations
 
 - The scanner is heuristic and may produce false positives or miss behavior hidden behind runtime configuration, remote services, feature flags, or App Store Connect-only setup.
-- Current Apple policy should be checked before making high-impact conclusions. App Review Guidelines are the primary source for rejection likelihood; HIG is supporting design and UX evidence.
+- Current Apple policy should be checked before making high-impact conclusions.
 - Repository scans cannot prove metadata, privacy answers, subscription products, entitlement approvals, backend availability, or demo credentials unless those artifacts are present in the repo.
 
 ## Validate
