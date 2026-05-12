@@ -9,6 +9,7 @@ import plistlib
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -1272,10 +1273,110 @@ def print_markdown(root: Path, result: ScanResult) -> None:
         print()
 
 
+def truncate(value: str, limit: int = 140) -> str:
+    normalized = re.sub(r"\s+", " ", value.strip())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
+
+
+def compact_result(root: Path, result: ScanResult, max_findings: int = 12) -> dict[str, Any]:
+    max_findings = max(0, max_findings)
+    severity_counts = Counter(finding.severity for finding in result.findings)
+    platform_summary = [
+        {
+            "platform": target.platform,
+            "confidence": target.confidence,
+        }
+        for target in result.target_platforms
+    ]
+    target_summary = [
+        {
+            "name": target.name,
+            "bundle_identifier": target.bundle_identifier,
+            "platforms": target.platforms,
+            "submission_path": target.submission_path,
+        }
+        for target in result.targets[:8]
+    ]
+    findings = [
+        {
+            "severity": finding.severity,
+            "id": finding.id,
+            "category": finding.category,
+            "title": finding.title,
+            "confidence": finding.confidence,
+            "first_evidence": finding.evidence[0] if finding.evidence else None,
+        }
+        for finding in result.findings[:max_findings]
+    ]
+    artifact_gaps = [
+        {
+            "name": check.name,
+            "status": check.status,
+        }
+        for check in result.artifact_checks
+        if check.status != "present_in_repo"
+    ]
+    return {
+        "target": str(root),
+        "platforms": platform_summary,
+        "targets": target_summary,
+        "finding_counts": dict(severity_counts),
+        "findings_shown": findings,
+        "findings_omitted": max(0, len(result.findings) - len(findings)),
+        "artifact_gaps": artifact_gaps,
+        "suppressions_applied": len(result.suppressions_applied),
+        "notes": result.notes[:5],
+    }
+
+
+def print_compact(root: Path, result: ScanResult, max_findings: int = 12) -> None:
+    summary = compact_result(root, result, max_findings=max_findings)
+    print("# Apple App Review Risk Scan Summary")
+    print()
+    print(f"Target: `{root}`")
+    platforms = summary["platforms"]
+    if platforms:
+        joined = ", ".join(f"{item['platform']} ({item['confidence']})" for item in platforms)
+        print(f"Platforms: {joined}")
+    else:
+        print("Platforms: unknown")
+    if summary["targets"]:
+        print("Targets:")
+        for target in summary["targets"]:
+            platforms_text = ", ".join(target["platforms"]) or "unknown"
+            print(f"- {target['name']}: {target['bundle_identifier'] or 'unknown'}, {platforms_text}, {target['submission_path']}")
+    counts = summary["finding_counts"]
+    count_text = ", ".join(f"{severity}={counts.get(severity, 0)}" for severity in ("HIGH", "MEDIUM", "LOW", "INFO"))
+    print(f"Findings: {count_text}")
+    print()
+    for finding in summary["findings_shown"]:
+        evidence = finding["first_evidence"] or "No evidence captured."
+        print(f"- {finding['severity']} `{finding['id']}`: {finding['title']} ({finding['confidence']})")
+        print(f"  evidence: `{truncate(evidence)}`")
+    if summary["findings_omitted"]:
+        print(f"- ... {summary['findings_omitted']} more finding(s) omitted; rerun with `--format markdown` or `--format json` for details.")
+    if summary["artifact_gaps"]:
+        print()
+        print("Artifact gaps:")
+        for gap in summary["artifact_gaps"]:
+            print(f"- {gap['name']}: {gap['status']}")
+    if summary["suppressions_applied"]:
+        print()
+        print(f"Suppressions applied: {summary['suppressions_applied']}")
+    if summary["notes"]:
+        print()
+        print("Notes:")
+        for note in summary["notes"]:
+            print(f"- {truncate(note)}")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Scan Apple app repositories for App Review risk signals.")
     parser.add_argument("path", type=Path, help="Path to an Apple app repository or project directory.")
-    parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument("--format", choices=("compact", "markdown", "json", "compact-json"), default="compact")
+    parser.add_argument("--max-findings", type=int, default=12, help="Maximum findings to show in compact output.")
     parser.add_argument("--fail-on", choices=("none", "high", "medium"), default="none")
     parser.add_argument("--xcodebuild", action="store_true", help="Run xcodebuild -list/-showBuildSettings to extract exact target metadata.")
     parser.add_argument("--project", help="Specific .xcodeproj path to pass to xcodebuild.")
@@ -1297,6 +1398,10 @@ def main(argv: list[str]) -> int:
     )
     if args.format == "json":
         print(json.dumps({"target": str(root), **asdict(result)}, indent=2))
+    elif args.format == "compact-json":
+        print(json.dumps(compact_result(root, result, max_findings=args.max_findings), indent=2))
+    elif args.format == "compact":
+        print_compact(root, result, max_findings=args.max_findings)
     else:
         print_markdown(root, result)
 

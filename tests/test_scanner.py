@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import plistlib
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -201,6 +203,24 @@ class ScannerTests(unittest.TestCase):
 
             self.assertNotIn("storekit-external-purchase-language", finding_ids)
             self.assertEqual(result.suppressions_applied[0].finding_id, "storekit-external-purchase-language")
+
+    def test_compact_output_limits_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            write_plist(root / "Info.plist", {"CFBundleName": "Store", "UIDeviceFamily": [1]})
+            write_text(root / "Sources" / "Paywall.swift", 'let copy = "Subscribe on the web"\n')
+
+            result = scanner.scan_result(root)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                scanner.print_compact(root, result, max_findings=1)
+            rendered = output.getvalue()
+
+            self.assertIn("Apple App Review Risk Scan Summary", rendered)
+            self.assertIn("storekit-external-purchase-language", rendered)
+            self.assertIn("more finding", rendered)
+            self.assertNotIn("Confirm the app is not steering", rendered)
 
 
 if __name__ == "__main__":

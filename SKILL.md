@@ -22,7 +22,7 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
 python3 /path/to/app-store-review-risk/scripts/scan_apple_app_review_risks.py /path/to/app/repo
 ```
 
-Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format json` when another tool needs structured output. Use the scanner's target matrix, platform signals, artifact checks, finding IDs, and suppression notes to seed the review. Treat scanner findings as leads, not verdicts.
+The default scanner output is compact; use it first. Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format markdown` or `--format json` only when drilling into specific finding IDs or feeding another tool. Use `--format compact-json` when structured output is needed but token budget matters. Treat scanner findings as leads, not verdicts.
 
 3. Read `references/apple-platform-risk-areas.md` for the shared risk map, then read only the platform file(s) matching the target matrix:
    - `references/ios-ipados.md` for iOS/iPadOS apps and iOS apps distributed through notarization.
@@ -49,6 +49,13 @@ Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and ex
    - in-app account deletion for apps that allow account creation
    - moderation, reporting, blocking, and abuse handling for user-generated content
    - accurate metadata, screenshots, age rating, support URL, and review notes
+
+## Token Discipline
+
+- Start with compact scanner output and the target matrix; do not paste full JSON or full markdown into the final answer.
+- Load only `apple-platform-risk-areas.md`, the platform reference(s) matching the target matrix, and `app-store-connect-artifacts.md` if metadata evidence is missing.
+- Quote only the highest-value evidence lines for each reported risk. Use finding IDs to refer back to scanner output.
+- Browse or cite Apple docs only for current high-risk or policy-sensitive conclusions; prefer the App Review Guidelines first, then HIG or implementation docs.
 
 ## Reporting Format
 
