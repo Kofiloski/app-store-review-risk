@@ -22,6 +22,15 @@ Build a target matrix before evaluating risks:
 
 Do not report watchOS, tvOS, macOS, or visionOS issues solely because shared Swift code contains ambiguous APIs. Require target evidence or mark the item as `Needs Verification`.
 
+After the target matrix is built, load the matching one-level reference file:
+
+- `ios-ipados.md`
+- `macos.md`
+- `watchos.md`
+- `tvos.md`
+- `visionos.md`
+- `app-store-connect-artifacts.md`
+
 ## Core App Review Surfaces
 
 - **App completeness and reviewer access**: crash-free release build, no placeholder content, complete metadata, live backend, full demo account or full-featured demo mode, hardware/sample data available when needed.

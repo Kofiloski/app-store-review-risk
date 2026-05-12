@@ -22,9 +22,15 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
 python3 /path/to/app-store-review-risk/scripts/scan_apple_app_review_risks.py /path/to/app/repo
 ```
 
-Use `--format json` when another tool needs structured output. Use the scanner's platform target signals to seed the target matrix. Treat scanner findings as leads, not verdicts.
+Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format json` when another tool needs structured output. Use the scanner's target matrix, platform signals, artifact checks, finding IDs, and suppression notes to seed the review. Treat scanner findings as leads, not verdicts.
 
-3. Read `references/apple-platform-risk-areas.md` when deciding what to inspect manually, especially for privacy manifests, entitlements, StoreKit, external purchase links, account deletion, UGC, regulated categories, and metadata completeness.
+3. Read `references/apple-platform-risk-areas.md` for the shared risk map, then read only the platform file(s) matching the target matrix:
+   - `references/ios-ipados.md` for iOS/iPadOS apps and iOS apps distributed through notarization.
+   - `references/macos.md` for macOS apps, Mac Catalyst targets, helper tools, sandboxing, or notarization.
+   - `references/watchos.md` for watch apps, WatchKit extensions, complications, workouts, and companion dependencies.
+   - `references/tvos.md` for tvOS apps, focus navigation, media, top shelf, and TV subscriptions.
+   - `references/visionos.md` for visionOS windows, volumes, immersive spaces, comfort, spatial input, and privacy.
+   - `references/app-store-connect-artifacts.md` when metadata, screenshots, privacy answers, review notes, subscription config, or suppression files are missing or need review.
 
 4. Use Apple's official guidance as the evaluation baseline.
    - Treat App Review Guidelines as the primary source for rejection risk: https://developer.apple.com/app-store/review/guidelines/
@@ -76,4 +82,5 @@ Use `Blocking Risk` only for issues likely to stop submission, such as crashes, 
 - Separate code/config findings from App Store Connect metadata gaps.
 - Name likely guideline areas when useful, but avoid overfitting exact rule numbers unless checked against the current App Review Guidelines.
 - Call out false positives from the scanner explicitly so the user knows they were considered.
+- Use `.appstore-review-risk.yml` suppressions only when the repository documents why a scanner finding is not review-relevant; still mention important suppressed high-risk areas if the reason is weak.
 - If the repository alone cannot prove compliance, state the exact artifact needed: review notes, App Privacy answers, subscription products, screenshots, entitlement approval, backend/demo credentials, or legal/regulatory documentation.

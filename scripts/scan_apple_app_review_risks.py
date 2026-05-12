@@ -7,6 +7,7 @@ import argparse
 import json
 import plistlib
 import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -45,6 +46,8 @@ TEXT_EXTENSIONS = {
     ".xcconfig",
     ".xcprivacy",
     ".xml",
+    ".yml",
+    ".yaml",
 }
 
 PLATFORM_FOCUS: dict[str, list[str]] = {
@@ -66,8 +69,8 @@ PLATFORM_SIGNAL_PATTERNS: dict[str, list[str]] = {
 }
 
 DEVICE_FAMILY_PLATFORMS = {
-    1: "iOS",
-    2: "iPadOS",
+    "1": "iOS",
+    "2": "iPadOS",
 }
 
 PERMISSION_CLUES: dict[str, list[str]] = {
@@ -101,12 +104,21 @@ PERMISSION_ALTERNATIVE_KEYS: dict[str, list[str]] = {
     "NSRemindersUsageDescription": ["NSRemindersFullAccessUsageDescription"],
 }
 
-REQUIRED_REASON_CLUES: dict[str, list[str]] = {
-    "User defaults": [r"\bUserDefaults\b", r"\bNSUserDefaults\b"],
-    "File timestamps": [r"\bcontentModificationDateKey\b", r"\bcreationDateKey\b", r"\battributesOfItem\b", r"\bgetattrlist\b"],
-    "Disk space": [r"\bvolumeAvailableCapacity", r"\bvolumeTotalCapacity", r"\bsystemFreeSize\b", r"\bstatfs\b"],
-    "System boot time": [r"\bsystemUptime\b", r"\bmach_absolute_time\b", r"\bCACurrentMediaTime\b"],
+REQUIRED_REASON_CLUES: dict[str, tuple[str, list[str]]] = {
+    "NSPrivacyAccessedAPICategoryUserDefaults": ("User defaults", [r"\bUserDefaults\b", r"\bNSUserDefaults\b"]),
+    "NSPrivacyAccessedAPICategoryFileTimestamp": ("File timestamps", [r"\bcontentModificationDateKey\b", r"\bcreationDateKey\b", r"\battributesOfItem\b", r"\bgetattrlist\b"]),
+    "NSPrivacyAccessedAPICategoryDiskSpace": ("Disk space", [r"\bvolumeAvailableCapacity", r"\bvolumeTotalCapacity", r"\bsystemFreeSize\b", r"\bstatfs\b"]),
+    "NSPrivacyAccessedAPICategorySystemBootTime": ("System boot time", [r"\bsystemUptime\b", r"\bmach_absolute_time\b", r"\bCACurrentMediaTime\b"]),
 }
+
+PRIVACY_COLLECTION_CLUES = [
+    r"\banalytics\b",
+    r"\bcrashlytics\b",
+    r"\bemail\b",
+    r"\bphone number\b",
+    r"\badvertisingIdentifier\b",
+    r"\btracking\b",
+]
 
 SENSITIVE_ENTITLEMENTS: dict[str, tuple[str, str]] = {
     "com.apple.developer.applesignin": ("Sign in with Apple", "Confirm parity with other login options and App Store metadata."),
@@ -222,6 +234,13 @@ PRIVATE_API_PATTERNS = [
     r"\b_private\b",
 ]
 
+ARTIFACT_PATTERNS: dict[str, list[str]] = {
+    "App Store metadata and screenshots": [r"fastlane/metadata", r"screenshots?/", r"/metadata/"],
+    "Review notes and demo access": [r"review[-_ ]?notes", r"demo[-_ ]?account", r"test[-_ ]?account", r"review[-_ ]?credentials"],
+    "App Privacy answers": [r"privacy[-_ ]?nutrition", r"app[-_ ]?privacy", r"privacy_details", r"privacy[-_ ]?answers"],
+    "Privacy policy and support URL": [r"privacy[-_ ]?policy", r"support[-_ ]?url", r"supportUrl", r"privacyUrl"],
+}
+
 VAGUE_USAGE_WORDS = {
     "",
     "access required",
@@ -236,6 +255,7 @@ VAGUE_USAGE_WORDS = {
 
 @dataclass
 class Finding:
+    id: str
     severity: str
     category: str
     title: str
@@ -253,9 +273,44 @@ class TargetPlatform:
 
 
 @dataclass
+class TargetSummary:
+    name: str
+    bundle_identifier: str | None
+    product_type: str | None
+    platforms: list[str]
+    sdkroot: str | None
+    supported_platforms: list[str]
+    targeted_device_family: list[str]
+    submission_path: str
+    evidence: list[str]
+
+
+@dataclass
+class ArtifactCheck:
+    name: str
+    status: str
+    evidence: list[str]
+    recommendation: str
+
+
+@dataclass
+class Suppression:
+    finding_id: str
+    reason: str
+
+
+@dataclass
 class ScanResult:
     target_platforms: list[TargetPlatform]
+    targets: list[TargetSummary]
     findings: list[Finding]
+    artifact_checks: list[ArtifactCheck]
+    suppressions_applied: list[Suppression]
+    notes: list[str]
+
+
+def slugify(value: str) -> str:
+    return re.sub(r"(^-|-$)", "", re.sub(r"[^a-z0-9]+", "-", value.lower()))
 
 
 def iter_files(root: Path) -> Iterable[Path]:
@@ -279,12 +334,12 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def load_plist(path: Path) -> Any | None:
+def load_plist(path: Path) -> tuple[Any | None, str | None]:
     try:
         with path.open("rb") as handle:
-            return plistlib.load(handle)
-    except Exception:
-        return None
+            return plistlib.load(handle), None
+    except Exception as error:
+        return None, str(error)
 
 
 def plist_has_key(plists: list[tuple[Path, Any]], key: str) -> bool:
@@ -342,21 +397,260 @@ def add(
     confidence: str,
     evidence: list[str],
     recommendation: str,
+    finding_id: str | None = None,
 ) -> None:
-    findings.append(Finding(severity, category, title, confidence, evidence, recommendation))
+    findings.append(
+        Finding(
+            id=finding_id or slugify(f"{category}-{title}"),
+            severity=severity,
+            category=category,
+            title=title,
+            confidence=confidence,
+            evidence=evidence,
+            recommendation=recommendation,
+        )
+    )
 
 
-def detect_target_platforms(root: Path, files: list[Path], parsed_plists: list[tuple[Path, Any]]) -> list[TargetPlatform]:
+def split_build_setting(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part.strip().strip('"') for part in re.split(r"[,\s]+", value) if part.strip().strip('"')]
+
+
+def platforms_from_settings(settings: dict[str, str]) -> list[str]:
+    platforms: set[str] = set()
+    sdkroot = settings.get("SDKROOT", "")
+    supported = " ".join(split_build_setting(settings.get("SUPPORTED_PLATFORMS")))
+    combined = f"{sdkroot} {supported}".lower()
+    if "iphoneos" in combined:
+        platforms.add("iOS")
+    if "macosx" in combined:
+        platforms.add("macOS")
+    if "watchos" in combined:
+        platforms.add("watchOS")
+    if "appletvos" in combined:
+        platforms.add("tvOS")
+    if "xros" in combined:
+        platforms.add("visionOS")
+    for family in split_build_setting(settings.get("TARGETED_DEVICE_FAMILY")):
+        platform = DEVICE_FAMILY_PLATFORMS.get(family)
+        if platform:
+            platforms.add(platform)
+    if settings.get("SUPPORTS_MACCATALYST") == "YES":
+        platforms.add("macOS")
+    return sorted(platforms, key=list(PLATFORM_FOCUS).index)
+
+
+def infer_submission_path(platforms: list[str], settings: dict[str, str]) -> str:
+    if "macOS" in platforms and settings.get("ENABLE_HARDENED_RUNTIME") == "YES":
+        return "macOS App Store or notarization"
+    if platforms:
+        return "App Store / TestFlight"
+    return "Unknown"
+
+
+def target_from_settings(name: str, settings: dict[str, str], evidence: list[str]) -> TargetSummary:
+    platforms = platforms_from_settings(settings)
+    return TargetSummary(
+        name=name,
+        bundle_identifier=settings.get("PRODUCT_BUNDLE_IDENTIFIER"),
+        product_type=settings.get("PRODUCT_TYPE"),
+        platforms=platforms,
+        sdkroot=settings.get("SDKROOT"),
+        supported_platforms=split_build_setting(settings.get("SUPPORTED_PLATFORMS")),
+        targeted_device_family=split_build_setting(settings.get("TARGETED_DEVICE_FAMILY")),
+        submission_path=infer_submission_path(platforms, settings),
+        evidence=evidence,
+    )
+
+
+def parse_xcodebuild_list_json(raw: str) -> tuple[list[str], list[str]]:
+    data = json.loads(raw)
+    container = data.get("workspace") or data.get("project") or {}
+    return list(container.get("schemes", [])), list(container.get("targets", []))
+
+
+def parse_show_build_settings_json(raw: str) -> list[TargetSummary]:
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = data.get("targets", [data])
+    targets: list[TargetSummary] = []
+    if not isinstance(data, list):
+        return targets
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        settings = entry.get("buildSettings")
+        if not isinstance(settings, dict):
+            continue
+        name = entry.get("target") or entry.get("targetName") or settings.get("TARGET_NAME") or settings.get("PRODUCT_NAME") or "xcodebuild target"
+        targets.append(target_from_settings(str(name), {str(k): str(v) for k, v in settings.items()}, ["xcodebuild -showBuildSettings -json"]))
+    return targets
+
+
+def parse_show_build_settings_text(raw: str) -> list[TargetSummary]:
+    targets: list[TargetSummary] = []
+    current_name: str | None = None
+    current_settings: dict[str, str] = {}
+    for line in raw.splitlines():
+        header = re.match(r"Build settings for action .+ and target (.+):", line.strip())
+        if header:
+            if current_name and current_settings:
+                targets.append(target_from_settings(current_name, current_settings, ["xcodebuild -showBuildSettings"]))
+            current_name = header.group(1)
+            current_settings = {}
+            continue
+        match = re.match(r"\s*([A-Z0-9_]+)\s*=\s*(.+?)\s*$", line)
+        if match and current_name:
+            current_settings[match.group(1)] = match.group(2)
+    if current_name and current_settings:
+        targets.append(target_from_settings(current_name, current_settings, ["xcodebuild -showBuildSettings"]))
+    return targets
+
+
+def find_xcode_container(root: Path, project: str | None, workspace: str | None) -> list[str]:
+    if workspace:
+        return ["-workspace", workspace]
+    if project:
+        return ["-project", project]
+    workspaces = sorted(root.glob("*.xcworkspace"))
+    if workspaces:
+        return ["-workspace", str(workspaces[0])]
+    projects = sorted(root.glob("*.xcodeproj"))
+    if projects:
+        return ["-project", str(projects[0])]
+    return []
+
+
+def run_xcodebuild(args: list[str], root: Path, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["xcodebuild", *args],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def discover_xcodebuild_targets(
+    root: Path,
+    project: str | None,
+    workspace: str | None,
+    scheme: str | None,
+    notes: list[str],
+) -> list[TargetSummary]:
+    container_args = find_xcode_container(root, project, workspace)
+    if not container_args:
+        notes.append("xcodebuild discovery skipped: no .xcodeproj or .xcworkspace found.")
+        return []
+    try:
+        list_result = run_xcodebuild([*container_args, "-list", "-json"], root)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        notes.append(f"xcodebuild discovery failed: {error}")
+        return []
+    if list_result.returncode != 0:
+        notes.append(f"xcodebuild -list failed: {list_result.stderr.strip()[:300]}")
+        return []
+    try:
+        schemes, plain_targets = parse_xcodebuild_list_json(list_result.stdout)
+    except Exception as error:
+        notes.append(f"xcodebuild -list JSON parse failed: {error}")
+        schemes, plain_targets = [], []
+
+    selected_schemes = [scheme] if scheme else schemes[:8]
+    targets: list[TargetSummary] = []
+    for selected_scheme in selected_schemes:
+        show_args = [*container_args, "-scheme", selected_scheme, "-showBuildSettings", "-json"]
+        show_result = run_xcodebuild(show_args, root)
+        parsed: list[TargetSummary] = []
+        if show_result.returncode == 0:
+            try:
+                parsed = parse_show_build_settings_json(show_result.stdout)
+            except Exception:
+                parsed = []
+        if not parsed:
+            fallback = run_xcodebuild([*container_args, "-scheme", selected_scheme, "-showBuildSettings"], root)
+            if fallback.returncode == 0:
+                parsed = parse_show_build_settings_text(fallback.stdout)
+        for target in parsed:
+            target.evidence.append(f"xcodebuild scheme: {selected_scheme}")
+        targets.extend(parsed)
+
+    if not targets and plain_targets:
+        notes.append("xcodebuild listed targets but build settings were unavailable; static target inference will be used.")
+    return targets
+
+
+def parse_pbx_settings(text: str) -> dict[str, str]:
+    settings: dict[str, str] = {}
+    for key in (
+        "PRODUCT_BUNDLE_IDENTIFIER",
+        "PRODUCT_NAME",
+        "PRODUCT_TYPE",
+        "SDKROOT",
+        "SUPPORTED_PLATFORMS",
+        "TARGETED_DEVICE_FAMILY",
+        "SUPPORTS_MACCATALYST",
+        "ENABLE_HARDENED_RUNTIME",
+    ):
+        match = re.search(rf"\b{key}\s*=\s*([^;\n]+)", text)
+        if match:
+            settings[key] = match.group(1).strip().strip('"')
+    return settings
+
+
+def discover_static_targets(root: Path, files: list[Path], parsed_plists: list[tuple[Path, Any]]) -> list[TargetSummary]:
+    targets: list[TargetSummary] = []
+    for path in files:
+        if path.name != "project.pbxproj":
+            continue
+        settings = parse_pbx_settings(read_text(path))
+        if settings:
+            name = settings.get("PRODUCT_NAME") or path.parent.stem or "Static project settings"
+            targets.append(target_from_settings(name, settings, [f"{rel(path, root)}: build settings"]))
+    for path, data in parsed_plists:
+        if path.name != "Info.plist" or not isinstance(data, dict):
+            continue
+        settings: dict[str, str] = {}
+        if data.get("CFBundleIdentifier"):
+            settings["PRODUCT_BUNDLE_IDENTIFIER"] = str(data["CFBundleIdentifier"])
+        if data.get("CFBundleName"):
+            settings["PRODUCT_NAME"] = str(data["CFBundleName"])
+        if data.get("CFBundlePackageType"):
+            settings["PRODUCT_TYPE"] = str(data["CFBundlePackageType"])
+        device_families = data.get("UIDeviceFamily")
+        if isinstance(device_families, int):
+            settings["TARGETED_DEVICE_FAMILY"] = str(device_families)
+        elif isinstance(device_families, list):
+            settings["TARGETED_DEVICE_FAMILY"] = ",".join(str(item) for item in device_families)
+        if settings:
+            targets.append(target_from_settings(settings.get("PRODUCT_NAME", rel(path, root)), settings, [f"{rel(path, root)}: Info.plist"]))
+    return targets
+
+
+def detect_target_platforms(
+    root: Path,
+    files: list[Path],
+    parsed_plists: list[tuple[Path, Any]],
+    targets: list[TargetSummary],
+) -> list[TargetPlatform]:
     signals: dict[str, list[str]] = {platform: [] for platform in PLATFORM_FOCUS}
     strong_platforms: set[str] = set()
 
     def add_signal(platform: str, evidence: str, strong: bool = False) -> None:
         if platform not in signals:
             return
-        if evidence not in signals[platform] and len(signals[platform]) < 8:
+        if evidence not in signals[platform] and len(signals[platform]) < 10:
             signals[platform].append(evidence)
         if strong:
             strong_platforms.add(platform)
+
+    for target in targets:
+        for platform in target.platforms:
+            add_signal(platform, f"{target.name}: {', '.join(target.evidence)}", strong=True)
 
     for path, data in parsed_plists:
         if not isinstance(data, dict):
@@ -366,15 +660,11 @@ def detect_target_platforms(root: Path, files: list[Path], parsed_plists: list[t
             device_families = [device_families]
         if isinstance(device_families, list):
             for family in device_families:
-                platform = DEVICE_FAMILY_PLATFORMS.get(family)
+                platform = DEVICE_FAMILY_PLATFORMS.get(str(family))
                 if platform:
                     add_signal(platform, f"{rel(path, root)}:UIDeviceFamily contains {family}", strong=True)
-        bundle_package_type = data.get("CFBundlePackageType")
-        if bundle_package_type == "APPL":
-            if "WKWatchKitApp" in data:
-                add_signal("watchOS", f"{rel(path, root)}:WKWatchKitApp", strong=True)
-            if "UIApplicationSceneManifest" in data or "UISupportedInterfaceOrientations" in data:
-                add_signal("iOS", f"{rel(path, root)}:{bundle_package_type}", strong=False)
+        if data.get("WKWatchKitApp"):
+            add_signal("watchOS", f"{rel(path, root)}:WKWatchKitApp", strong=True)
 
     compiled = {
         platform: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
@@ -393,17 +683,16 @@ def detect_target_platforms(root: Path, files: list[Path], parsed_plists: list[t
                 for pattern in patterns:
                     if pattern.search(stripped):
                         strong = any(token in stripped for token in ("SDKROOT", "SUPPORTED_PLATFORMS", "TARGETED_DEVICE_FAMILY"))
-                        snippet = stripped[:140]
-                        add_signal(platform, f"{rel(path, root)}:{line_number}: {snippet}", strong=strong)
+                        add_signal(platform, f"{rel(path, root)}:{line_number}: {stripped[:140]}", strong=strong)
                         break
 
-    targets: list[TargetPlatform] = []
+    target_platforms: list[TargetPlatform] = []
     for platform in PLATFORM_FOCUS:
         evidence = signals[platform]
         if not evidence:
             continue
         confidence = "high" if platform in strong_platforms else "medium"
-        targets.append(
+        target_platforms.append(
             TargetPlatform(
                 platform=platform,
                 confidence=confidence,
@@ -411,27 +700,281 @@ def detect_target_platforms(root: Path, files: list[Path], parsed_plists: list[t
                 guideline_focus=PLATFORM_FOCUS[platform],
             )
         )
-    return targets
+    return target_platforms
 
 
-def scan_result(root: Path) -> ScanResult:
+def declared_required_reason_categories(privacy_manifests: list[tuple[Path, Any]]) -> set[str]:
+    declared: set[str] = set()
+    for _, data in privacy_manifests:
+        if not isinstance(data, dict):
+            continue
+        entries = data.get("NSPrivacyAccessedAPITypes")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("NSPrivacyAccessedAPIType"), str):
+                declared.add(entry["NSPrivacyAccessedAPIType"])
+    return declared
+
+
+def validate_privacy_manifests(
+    root: Path,
+    privacy_manifest_paths: list[Path],
+    privacy_manifests: list[tuple[Path, Any]],
+    invalid_plists: list[tuple[Path, str]],
+    text_files: list[Path],
+    findings: list[Finding],
+) -> None:
+    for path, error in invalid_plists:
+        if path.name == "PrivacyInfo.xcprivacy":
+            add(
+                findings,
+                "HIGH",
+                "Privacy",
+                "Invalid PrivacyInfo.xcprivacy file",
+                "high",
+                [f"{rel(path, root)}: {error}"],
+                "Fix the privacy manifest plist syntax before submission; invalid manifests can fail App Store Connect processing.",
+                "privacy-invalid-privacy-manifest",
+            )
+
+    for path, data in privacy_manifests:
+        if not isinstance(data, dict):
+            add(
+                findings,
+                "HIGH",
+                "Privacy",
+                "PrivacyInfo.xcprivacy is not a dictionary",
+                "high",
+                [rel(path, root)],
+                "Replace the privacy manifest with a valid dictionary containing Apple's expected privacy keys.",
+                "privacy-manifest-not-dictionary",
+            )
+            continue
+        if not data:
+            add(
+                findings,
+                "MEDIUM",
+                "Privacy",
+                "Empty PrivacyInfo.xcprivacy file",
+                "medium",
+                [rel(path, root)],
+                "Populate the privacy manifest with accurate collected data, tracking, and required-reason API declarations, or verify an empty manifest is correct.",
+                "privacy-empty-privacy-manifest",
+            )
+        accessed_api_types = data.get("NSPrivacyAccessedAPITypes")
+        if accessed_api_types is not None and not isinstance(accessed_api_types, list):
+            add(
+                findings,
+                "HIGH",
+                "Privacy",
+                "Invalid NSPrivacyAccessedAPITypes value",
+                "high",
+                [f"{rel(path, root)}: NSPrivacyAccessedAPITypes must be an array"],
+                "Use an array of dictionaries with NSPrivacyAccessedAPIType and NSPrivacyAccessedAPITypeReasons.",
+                "privacy-invalid-accessed-api-types",
+            )
+        elif isinstance(accessed_api_types, list):
+            for index, entry in enumerate(accessed_api_types):
+                if not isinstance(entry, dict):
+                    add(
+                        findings,
+                        "HIGH",
+                        "Privacy",
+                        "Invalid required-reason API declaration",
+                        "high",
+                        [f"{rel(path, root)}: NSPrivacyAccessedAPITypes[{index}] is not a dictionary"],
+                        "Use a dictionary entry with NSPrivacyAccessedAPIType and NSPrivacyAccessedAPITypeReasons.",
+                        f"privacy-invalid-accessed-api-entry-{index}",
+                    )
+                    continue
+                reasons = entry.get("NSPrivacyAccessedAPITypeReasons")
+                if not entry.get("NSPrivacyAccessedAPIType") or not isinstance(reasons, list) or not reasons:
+                    add(
+                        findings,
+                        "HIGH",
+                        "Privacy",
+                        "Incomplete required-reason API declaration",
+                        "high",
+                        [f"{rel(path, root)}: NSPrivacyAccessedAPITypes[{index}]={entry!r}"],
+                        "Add the API category and at least one approved reason code for each required-reason API declaration.",
+                        f"privacy-incomplete-accessed-api-entry-{index}",
+                    )
+        if data.get("NSPrivacyTracking") is True and not data.get("NSPrivacyTrackingDomains"):
+            add(
+                findings,
+                "MEDIUM",
+                "Privacy",
+                "Tracking declared without tracking domains",
+                "medium",
+                [f"{rel(path, root)}: NSPrivacyTracking=true"],
+                "Verify tracking domains are declared where applicable and App Privacy answers match tracking behavior.",
+                "privacy-tracking-without-domains",
+            )
+
+    declared_categories = declared_required_reason_categories(privacy_manifests)
+    for category_key, (label, patterns) in REQUIRED_REASON_CLUES.items():
+        hits = text_hits(text_files, patterns, root, max_hits=4)
+        if hits and category_key not in declared_categories:
+            evidence = [f"{label}: {hit}" for hit in hits]
+            manifest_note = "No PrivacyInfo.xcprivacy found." if not privacy_manifest_paths else f"Declared categories: {sorted(declared_categories)}"
+            add(
+                findings,
+                "MEDIUM",
+                "Privacy",
+                f"Potential required-reason API use not declared: {label}",
+                "medium",
+                [manifest_note, *evidence],
+                f"Inspect these APIs against Apple's required-reason API categories and add {category_key} with approved reason codes when applicable.",
+                f"privacy-missing-required-reason-{slugify(label)}",
+            )
+
+    collection_hits = text_hits(text_files, PRIVACY_COLLECTION_CLUES, root, max_hits=5)
+    declares_collected_data = any(isinstance(data, dict) and "NSPrivacyCollectedDataTypes" in data for _, data in privacy_manifests)
+    if collection_hits and privacy_manifests and not declares_collected_data:
+        add(
+            findings,
+            "LOW",
+            "Privacy",
+            "Data collection clues without NSPrivacyCollectedDataTypes",
+            "low",
+            collection_hits,
+            "Verify whether the app or SDKs collect data and align PrivacyInfo.xcprivacy plus App Privacy answers with actual behavior.",
+            "privacy-collection-clues-without-collected-data-types",
+        )
+
+
+def load_suppressions(root: Path) -> dict[str, str]:
+    candidates = [
+        root / ".appstore-review-risk.json",
+        root / ".appstore-review-risk.yml",
+        root / ".appstore-review-risk.yaml",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        text = read_text(path)
+        if path.suffix == ".json":
+            data = json.loads(text)
+            entries = data.get("suppressions", [])
+            return {
+                str(entry.get("id")): str(entry.get("reason", "No reason provided."))
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("id")
+            }
+        suppressions: dict[str, str] = {}
+        current_id: str | None = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            id_match = re.match(r"-\s*id:\s*[\"']?([^\"']+?)[\"']?\s*$", line)
+            if id_match:
+                current_id = id_match.group(1).strip()
+                suppressions[current_id] = "No reason provided."
+                continue
+            reason_match = re.match(r"reason:\s*[\"']?(.+?)[\"']?\s*$", line)
+            if current_id and reason_match:
+                suppressions[current_id] = reason_match.group(1).strip()
+        return suppressions
+    return {}
+
+
+def apply_suppressions(findings: list[Finding], suppressions: dict[str, str]) -> tuple[list[Finding], list[Suppression]]:
+    if not suppressions:
+        return findings, []
+    kept: list[Finding] = []
+    applied: list[Suppression] = []
+    for finding in findings:
+        reason = suppressions.get(finding.id)
+        if reason:
+            applied.append(Suppression(finding_id=finding.id, reason=reason))
+        else:
+            kept.append(finding)
+    return kept, applied
+
+
+def artifact_evidence(files: list[Path], root: Path, patterns: list[str]) -> list[str]:
+    compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+    evidence: list[str] = []
+    for path in files:
+        candidate = rel(path, root)
+        if any(pattern.search(candidate) for pattern in compiled):
+            evidence.append(candidate)
+            if len(evidence) >= 5:
+                break
+    return evidence
+
+
+def build_artifact_checks(root: Path, files: list[Path], findings: list[Finding]) -> list[ArtifactCheck]:
+    checks: list[ArtifactCheck] = []
+    for name, patterns in ARTIFACT_PATTERNS.items():
+        evidence = artifact_evidence(files, root, patterns)
+        checks.append(
+            ArtifactCheck(
+                name=name,
+                status="present_in_repo" if evidence else "missing_from_repo",
+                evidence=evidence or ["No matching artifact discovered in repository."],
+                recommendation=f"Provide or verify {name.lower()} before review; many rejection risks live outside source code.",
+            )
+        )
+
+    finding_categories = {finding.category for finding in findings}
+    finding_titles = " ".join(finding.title for finding in findings).lower()
+    conditional_checks = [
+        ("In-app purchase/subscription product configuration", "StoreKit" in finding_categories, [r"\.storekit$", r"subscription", r"in.?app.?purchase", r"products\.json"]),
+        ("Entitlement approval records", "Entitlements" in finding_categories, [r"entitlement", r"approval", r"capabilit"]),
+        ("Account deletion proof", "account deletion" in finding_titles, [r"delete.?account", r"account.?deletion"]),
+        ("UGC moderation policy", "User-generated content" in finding_categories, [r"moderation", r"abuse", r"report", r"block"]),
+    ]
+    for name, needed, patterns in conditional_checks:
+        if not needed:
+            continue
+        evidence = artifact_evidence(files, root, patterns)
+        checks.append(
+            ArtifactCheck(
+                name=name,
+                status="present_in_repo" if evidence else "needed_if_applicable",
+                evidence=evidence or ["No matching artifact discovered in repository."],
+                recommendation=f"Confirm {name.lower()} is available in App Store Connect review notes or repository artifacts.",
+            )
+        )
+    return checks
+
+
+def scan_result(
+    root: Path,
+    *,
+    use_xcodebuild: bool = False,
+    project: str | None = None,
+    workspace: str | None = None,
+    scheme: str | None = None,
+) -> ScanResult:
     files = list(iter_files(root))
     text_files = [path for path in files if path.suffix in TEXT_EXTENSIONS]
     plist_files = [path for path in files if path.suffix in {".plist", ".entitlements", ".xcprivacy", ".xcent"}]
-    parsed_plists = [(path, load_plist(path)) for path in plist_files]
-    parsed_plists = [(path, data) for path, data in parsed_plists if data is not None]
+    loaded_plists = [(path, *load_plist(path)) for path in plist_files]
+    parsed_plists = [(path, data) for path, data, error in loaded_plists if error is None]
+    invalid_plists = [(path, error or "unknown plist error") for path, data, error in loaded_plists if error is not None]
     info_plists = [
         (path, data)
         for path, data in parsed_plists
-        if path.name == "Info.plist" or (isinstance(data, dict) and any(key.startswith("NS") for key in data))
+        if path.name == "Info.plist" or (isinstance(data, dict) and any(str(key).startswith("NS") for key in data))
     ]
+    privacy_manifest_paths = [path for path in plist_files if path.name == "PrivacyInfo.xcprivacy"]
     privacy_manifests = [(path, data) for path, data in parsed_plists if path.name == "PrivacyInfo.xcprivacy"]
     entitlement_plists = [(path, data) for path, data in parsed_plists if path.suffix in {".entitlements", ".xcent"}]
-    target_platforms = detect_target_platforms(root, files, parsed_plists)
     findings: list[Finding] = []
+    notes: list[str] = []
+
+    targets = discover_static_targets(root, files, parsed_plists)
+    if use_xcodebuild:
+        xcodebuild_targets = discover_xcodebuild_targets(root, project, workspace, scheme, notes)
+        if xcodebuild_targets:
+            targets = xcodebuild_targets
+
+    target_platforms = detect_target_platforms(root, files, parsed_plists, targets)
 
     has_xcode_artifact = any(path.name == "project.pbxproj" or path.suffix == ".swift" for path in files)
-    if has_xcode_artifact and not privacy_manifests:
+    if has_xcode_artifact and not privacy_manifest_paths:
         add(
             findings,
             "MEDIUM",
@@ -440,7 +983,10 @@ def scan_result(root: Path) -> ScanResult:
             "medium",
             ["No PrivacyInfo.xcprivacy discovered in the scanned tree."],
             "Verify whether the app or bundled SDKs collect data or use required-reason APIs. Add valid privacy manifests where required and align App Privacy answers.",
+            "privacy-no-privacy-manifest",
         )
+
+    validate_privacy_manifests(root, privacy_manifest_paths, privacy_manifests, invalid_plists, text_files, findings)
 
     for usage_key, patterns in PERMISSION_CLUES.items():
         hits = text_hits(text_files, patterns, root, max_hits=4)
@@ -458,6 +1004,7 @@ def scan_result(root: Path) -> ScanResult:
                 "medium",
                 hits,
                 f"Add a specific {key_label} purpose string to the app target Info.plist or remove the protected-resource code path.",
+                f"permissions-missing-{slugify(key_label)}",
             )
         for value in values:
             raw_value = value.split("=", 1)[-1]
@@ -470,6 +1017,7 @@ def scan_result(root: Path) -> ScanResult:
                     "medium",
                     [value],
                     "Replace the purpose string with a specific user-facing explanation tied to the visible feature that uses the protected resource.",
+                    f"permissions-vague-{slugify(usage_key)}",
                 )
 
     att_hits = text_hits(text_files, [r"\bATTrackingManager\b", r"\bAppTrackingTransparency\b", r"\bASIdentifierManager\b", r"\badvertisingIdentifier\b"], root)
@@ -482,25 +1030,7 @@ def scan_result(root: Path) -> ScanResult:
             "medium",
             att_hits,
             "Add a clear tracking usage description, verify ATT prompt timing, and align App Privacy answers with actual tracking behavior.",
-        )
-
-    required_reason_hits: list[str] = []
-    for category, patterns in REQUIRED_REASON_CLUES.items():
-        hits = text_hits(text_files, patterns, root, max_hits=3)
-        if hits:
-            required_reason_hits.extend([f"{category}: {hit}" for hit in hits])
-    manifest_declares_reasons = any(
-        isinstance(data, dict) and "NSPrivacyAccessedAPITypes" in data for _, data in privacy_manifests
-    )
-    if required_reason_hits and not manifest_declares_reasons:
-        add(
-            findings,
-            "MEDIUM",
-            "Privacy",
-            "Potential required-reason API use not declared in privacy manifest",
-            "low",
-            required_reason_hits[:8],
-            "Inspect these APIs against Apple's required-reason API categories and add NSPrivacyAccessedAPITypes entries with approved reasons when applicable.",
+            "tracking-missing-nsusertrackingusagedescription",
         )
 
     for path, data in entitlement_plists:
@@ -517,6 +1047,7 @@ def scan_result(root: Path) -> ScanResult:
                     "high",
                     [f"{rel(path, root)}:{key}={data[key]!r}"],
                     recommendation,
+                    f"entitlements-{slugify(key)}",
                 )
 
     for key in ("SKExternalPurchaseLink", "SKExternalPurchaseMultiLink"):
@@ -530,6 +1061,7 @@ def scan_result(root: Path) -> ScanResult:
                 "high",
                 values,
                 "Verify external purchase entitlement approval, eligible regions/URLs, disclosure flow, and current StoreKit external purchase guidance.",
+                f"storekit-{slugify(key)}",
             )
 
     external_purchase_hits = text_hits(text_files, EXTERNAL_PURCHASE_PATTERNS, root)
@@ -542,6 +1074,7 @@ def scan_result(root: Path) -> ScanResult:
             "medium",
             external_purchase_hits,
             "Confirm the app is not steering digital purchases outside StoreKit unless it has the correct entitlement, storefront eligibility, disclosure flow, and review notes.",
+            "storekit-external-purchase-language",
         )
 
     storekit_hits = text_hits(text_files, STOREKIT_PATTERNS, root, max_hits=5)
@@ -554,6 +1087,7 @@ def scan_result(root: Path) -> ScanResult:
             "low",
             storekit_hits,
             "Verify the UI exposes purchase restoration or current entitlement recovery where appropriate, and include subscription review notes.",
+            "storekit-missing-restore-path",
         )
 
     social_hits = text_hits(text_files, SOCIAL_LOGIN_PATTERNS, root)
@@ -566,6 +1100,7 @@ def scan_result(root: Path) -> ScanResult:
             "medium",
             social_hits,
             "Verify whether Sign in with Apple parity is required for the login options offered, or document the applicable exception.",
+            "authentication-third-party-login-without-apple",
         )
 
     account_hits = text_hits(text_files, ACCOUNT_PATTERNS, root, max_hits=6)
@@ -578,6 +1113,7 @@ def scan_result(root: Path) -> ScanResult:
             "medium",
             account_hits,
             "Verify the app exposes an in-app account deletion path or a clearly compliant deletion flow, and document it in review notes if not obvious.",
+            "accounts-missing-account-deletion-flow",
         )
 
     ugc_hits = text_hits(text_files, UGC_PATTERNS, root, max_hits=6)
@@ -590,6 +1126,7 @@ def scan_result(root: Path) -> ScanResult:
             "low",
             ugc_hits,
             "Inspect the actual product behavior for moderation, reporting, blocking, abuse handling, filtering, and reviewer-accessible test content.",
+            "ugc-missing-reporting-blocking-flow",
         )
 
     background_values = plist_key_values(info_plists, "UIBackgroundModes", root)
@@ -602,6 +1139,7 @@ def scan_result(root: Path) -> ScanResult:
             "high",
             background_values,
             "Verify each background mode maps to a visible user-facing feature and is explained in review notes when the reviewer may not trigger it naturally.",
+            "background-ui-background-modes-enabled",
         )
 
     private_hits = text_hits(text_files, PRIVATE_API_PATTERNS, root)
@@ -614,6 +1152,7 @@ def scan_result(root: Path) -> ScanResult:
             "low",
             private_hits,
             "Inspect these calls carefully. Remove private API usage or prove the dynamic selector is public and necessary.",
+            "private-api-dynamic-private-selector",
         )
 
     placeholder_hits = text_hits(text_files, PLACEHOLDER_PATTERNS, root, max_hits=10)
@@ -626,11 +1165,21 @@ def scan_result(root: Path) -> ScanResult:
             "low",
             placeholder_hits,
             "Review whether these strings can appear in the submitted app, metadata, URLs, or review-visible flows. Remove unfinished content before submission.",
+            "app-completeness-placeholder-content",
         )
 
     severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
     findings.sort(key=lambda finding: (severity_order.get(finding.severity, 9), finding.category, finding.title))
-    return ScanResult(target_platforms=target_platforms, findings=findings)
+    findings, suppressions_applied = apply_suppressions(findings, load_suppressions(root))
+    artifact_checks = build_artifact_checks(root, files, findings)
+    return ScanResult(
+        target_platforms=target_platforms,
+        targets=targets,
+        findings=findings,
+        artifact_checks=artifact_checks,
+        suppressions_applied=suppressions_applied,
+        notes=notes,
+    )
 
 
 def scan(root: Path) -> list[Finding]:
@@ -644,6 +1193,17 @@ def print_markdown(root: Path, result: ScanResult) -> None:
     print()
     print("Static heuristic results. Inspect every finding manually before treating it as an App Review issue.")
     print()
+    if result.targets:
+        print("## Target Matrix")
+        print()
+        print("| Target | Bundle ID | Product Type | Platforms | Submission Path | Evidence |")
+        print("| --- | --- | --- | --- | --- | --- |")
+        for target in result.targets:
+            print(
+                f"| {target.name} | {target.bundle_identifier or 'unknown'} | {target.product_type or 'unknown'} | "
+                f"{', '.join(target.platforms) or 'unknown'} | {target.submission_path} | {'; '.join(target.evidence)} |"
+            )
+        print()
     if result.target_platforms:
         print("## Likely Platform Targets")
         print()
@@ -664,26 +1224,51 @@ def print_markdown(root: Path, result: ScanResult) -> None:
         print("No platform target signals were found. Identify the submitted app target manually before applying platform-specific guidelines.")
         print()
 
-    findings = result.findings
-    if not findings:
-        print("No obvious review-risk signals were found by the scanner.")
-        return
-    print("## Findings")
-    print()
-    print("| Severity | Category | Title | Confidence |")
-    print("| --- | --- | --- | --- |")
-    for finding in findings:
-        print(f"| {finding.severity} | {finding.category} | {finding.title} | {finding.confidence} |")
-    print()
-    for finding in findings:
-        print(f"## [{finding.severity}] {finding.title}")
+    if result.notes:
+        print("## Scanner Notes")
         print()
-        print(f"- Category: {finding.category}")
-        print(f"- Confidence: {finding.confidence}")
-        print("- Evidence:")
-        for item in finding.evidence:
-            print(f"  - `{item}`")
-        print(f"- Recommendation: {finding.recommendation}")
+        for note in result.notes:
+            print(f"- {note}")
+        print()
+
+    findings = result.findings
+    if findings:
+        print("## Findings")
+        print()
+        print("| Severity | Category | ID | Title | Confidence |")
+        print("| --- | --- | --- | --- | --- |")
+        for finding in findings:
+            print(f"| {finding.severity} | {finding.category} | `{finding.id}` | {finding.title} | {finding.confidence} |")
+        print()
+        for finding in findings:
+            print(f"## [{finding.severity}] {finding.title}")
+            print()
+            print(f"- ID: `{finding.id}`")
+            print(f"- Category: {finding.category}")
+            print(f"- Confidence: {finding.confidence}")
+            print("- Evidence:")
+            for item in finding.evidence:
+                print(f"  - `{item}`")
+            print(f"- Recommendation: {finding.recommendation}")
+            print()
+    else:
+        print("No obvious review-risk signals were found by the scanner.")
+        print()
+
+    if result.artifact_checks:
+        print("## App Store Connect Artifact Checks")
+        print()
+        print("| Artifact | Status | Recommendation |")
+        print("| --- | --- | --- |")
+        for check in result.artifact_checks:
+            print(f"| {check.name} | {check.status} | {check.recommendation} |")
+        print()
+
+    if result.suppressions_applied:
+        print("## Suppressions Applied")
+        print()
+        for suppression in result.suppressions_applied:
+            print(f"- `{suppression.finding_id}`: {suppression.reason}")
         print()
 
 
@@ -692,6 +1277,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("path", type=Path, help="Path to an Apple app repository or project directory.")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     parser.add_argument("--fail-on", choices=("none", "high", "medium"), default="none")
+    parser.add_argument("--xcodebuild", action="store_true", help="Run xcodebuild -list/-showBuildSettings to extract exact target metadata.")
+    parser.add_argument("--project", help="Specific .xcodeproj path to pass to xcodebuild.")
+    parser.add_argument("--workspace", help="Specific .xcworkspace path to pass to xcodebuild.")
+    parser.add_argument("--scheme", help="Specific scheme to inspect with xcodebuild.")
     args = parser.parse_args(argv)
 
     root = args.path.expanduser().resolve()
@@ -699,7 +1288,13 @@ def main(argv: list[str]) -> int:
         print(f"Path does not exist: {root}", file=sys.stderr)
         return 2
 
-    result = scan_result(root)
+    result = scan_result(
+        root,
+        use_xcodebuild=args.xcodebuild,
+        project=args.project,
+        workspace=args.workspace,
+        scheme=args.scheme,
+    )
     if args.format == "json":
         print(json.dumps({"target": str(root), **asdict(result)}, indent=2))
     else:
