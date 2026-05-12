@@ -68,11 +68,31 @@ Use `xcodebuild` for more exact target metadata when the project can build or li
 python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --xcodebuild --scheme MyScheme
 ```
 
+Review only risks introduced or touched by a Git diff:
+
+```bash
+python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --diff origin/main...HEAD
+```
+
+Compare an older release to the current working tree:
+
+```bash
+python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --base-ref v1.2.0
+```
+
+Compare two committed refs:
+
+```bash
+python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --base-ref v1.2.0 --head-ref v1.3.0
+```
+
 For CI-style checks:
 
 ```bash
 python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --fail-on high
 ```
+
+In diff mode, `--fail-on` applies to new findings and existing findings whose evidence touches changed files, so pre-existing unchanged findings do not fail a PR-style check.
 
 ## Output Formats
 
@@ -82,6 +102,16 @@ python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --fail-on high
 - `json` includes the full scanner result for automation.
 
 Inspect the cited files and App Store Connect artifacts before treating a result as a real rejection risk.
+
+## Diff Mode
+
+Diff mode scans the base version from Git without checking it out, then scans either the current working tree or a supplied head ref. It reports:
+
+- `new_findings`: risk signals present in the head version but not the base version
+- `changed_file_findings`: pre-existing findings whose current evidence references changed files
+- `resolved_findings`: findings present in the base version but no longer present in the head version
+
+Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--base-ref <ref>` when comparing a release tag to the current working tree.
 
 ## Skill Layout
 

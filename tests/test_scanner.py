@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -45,6 +46,15 @@ def write_xml_project(root: Path, objects: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         plistlib.dump({"objects": objects}, handle)
+
+
+def run_git(root: Path, args: list[str]) -> None:
+    subprocess.run(["git", *args], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def commit_all(root: Path, message: str) -> None:
+    run_git(root, ["add", "."])
+    run_git(root, ["-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", message])
 
 
 def fixture_pbxproj() -> str:
@@ -330,6 +340,48 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("storekit-external-purchase-language", rendered)
             self.assertIn("more finding", rendered)
             self.assertNotIn("Confirm the app is not steering", rendered)
+
+    def test_diff_mode_reports_new_working_tree_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            write_plist(root / "Info.plist", {"CFBundleName": "Store", "UIDeviceFamily": [1]})
+            write_text(root / "Sources" / "Paywall.swift", 'let copy = "Welcome"\n')
+            commit_all(root, "base")
+            write_text(root / "Sources" / "Paywall.swift", 'let copy = "Subscribe on the web"\n')
+
+            result = scanner.diff_scan_result(root, base_ref="HEAD")
+            new_ids = {finding.id for finding in result.new_findings}
+            output = io.StringIO()
+            with redirect_stdout(output):
+                scanner.print_compact_diff(result, max_findings=4)
+            rendered = output.getvalue()
+
+            self.assertIn("Sources/Paywall.swift", result.changed_files)
+            self.assertIn("storekit-external-purchase-language", new_ids)
+            self.assertEqual(result.head_ref, "working tree")
+            self.assertIn("Apple App Review Diff Risk Scan Summary", rendered)
+            self.assertIn("storekit-external-purchase-language", rendered)
+
+    def test_diff_mode_reports_resolved_ref_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            write_plist(root / "Info.plist", {"CFBundleName": "Store", "UIDeviceFamily": [1]})
+            write_text(root / "Sources" / "Paywall.swift", 'let copy = "Subscribe on the web"\n')
+            commit_all(root, "base")
+            base_ref = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            write_text(root / "Sources" / "Paywall.swift", 'let copy = "Welcome"\n')
+            commit_all(root, "head")
+
+            result = scanner.diff_scan_result(root, diff_range=f"{base_ref}..HEAD")
+            resolved_ids = {finding.id for finding in result.resolved_findings}
+
+            self.assertIn("Sources/Paywall.swift", result.changed_files)
+            self.assertIn("storekit-external-purchase-language", resolved_ids)
+            self.assertEqual(result.head_ref, "HEAD")
 
     def test_submitted_target_scopes_code_pattern_findings(self):
         with tempfile.TemporaryDirectory() as tmp:

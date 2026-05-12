@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import plistlib
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -359,6 +362,23 @@ class ScanResult:
     findings: list[Finding]
     artifact_checks: list[ArtifactCheck]
     suppressions_applied: list[Suppression]
+    notes: list[str]
+
+
+@dataclass
+class DiffScanResult:
+    target: str
+    base_ref: str
+    head_ref: str
+    diff_range: str | None
+    changed_files: list[str]
+    new_findings: list[Finding]
+    changed_file_findings: list[Finding]
+    resolved_findings: list[Finding]
+    existing_findings: list[Finding]
+    head_result: ScanResult
+    base_notes: list[str]
+    head_notes: list[str]
     notes: list[str]
 
 
@@ -1580,6 +1600,254 @@ def scan(root: Path) -> list[Finding]:
     return scan_result(root).findings
 
 
+def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def git_root_for(path: Path) -> Path:
+    result = run_git(["rev-parse", "--show-toplevel"], path)
+    if result.returncode != 0:
+        raise ValueError(f"Diff mode requires a git repository: {result.stderr.strip() or path}")
+    return Path(result.stdout.strip()).resolve()
+
+
+def parse_diff_range(diff_range: str, git_root: Path) -> tuple[str, str, str]:
+    if "..." in diff_range:
+        base_side, head_side = diff_range.split("...", 1)
+        if not base_side:
+            raise ValueError("Diff range must include a base ref before `...`.")
+        head_ref = head_side or "HEAD"
+        merge_base = run_git(["merge-base", base_side, head_ref], git_root)
+        if merge_base.returncode != 0:
+            raise ValueError(f"Could not resolve merge base for `{diff_range}`: {merge_base.stderr.strip()}")
+        return merge_base.stdout.strip(), head_ref, diff_range
+    if ".." in diff_range:
+        base_ref, head_ref = diff_range.split("..", 1)
+        if not base_ref:
+            raise ValueError("Diff range must include a base ref before `..`.")
+        return base_ref, head_ref or "HEAD", diff_range
+    return diff_range, "working tree", diff_range
+
+
+def changed_files_for_diff(
+    git_root: Path,
+    scan_root: Path,
+    *,
+    diff_range: str | None,
+    base_ref: str,
+    head_ref: str | None,
+) -> list[str]:
+    if diff_range:
+        diff_args = [diff_range]
+    elif head_ref:
+        diff_args = [f"{base_ref}..{head_ref}"]
+    else:
+        diff_args = [base_ref]
+    result = subprocess.run(
+        ["git", "-C", str(git_root), "diff", "--name-only", "-z", "--diff-filter=ACMRTUXBD", *diff_args, "--"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Could not list changed files: {result.stderr.decode(errors='ignore').strip()}")
+
+    scan_root = scan_root.resolve()
+    changed: list[str] = []
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        git_relative = raw_path.decode("utf-8", errors="ignore")
+        absolute = (git_root / git_relative).resolve()
+        try:
+            scanner_relative = absolute.relative_to(scan_root).as_posix()
+        except ValueError:
+            continue
+        changed.append(scanner_relative)
+    return sorted(dict.fromkeys(changed))
+
+
+def extract_git_archive(git_root: Path, ref: str, destination: Path) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(git_root), "archive", "--format=tar", ref],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Could not archive `{ref}`: {result.stderr.decode(errors='ignore').strip()}")
+    with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+        destination = destination.resolve()
+        for member in archive.getmembers():
+            target = (destination / member.name).resolve()
+            try:
+                target.relative_to(destination)
+            except ValueError:
+                raise ValueError(f"Unsafe path in git archive: {member.name}")
+        try:
+            archive.extractall(destination, filter="data")
+        except TypeError:
+            archive.extractall(destination)
+
+
+def scan_git_ref(
+    git_root: Path,
+    scan_subpath: Path,
+    ref: str,
+    *,
+    use_xcodebuild: bool,
+    project: str | None,
+    workspace: str | None,
+    scheme: str | None,
+    submitted_target: str | None,
+) -> ScanResult:
+    with tempfile.TemporaryDirectory(prefix="app-review-risk-") as tmp:
+        temp_root = Path(tmp)
+        extract_git_archive(git_root, ref, temp_root)
+        scan_root = (temp_root / scan_subpath).resolve()
+        if not scan_root.exists():
+            raise ValueError(f"Path `{scan_subpath}` does not exist in `{ref}`.")
+        return scan_result(
+            scan_root,
+            use_xcodebuild=use_xcodebuild,
+            project=project,
+            workspace=workspace,
+            scheme=scheme,
+            submitted_target=submitted_target,
+        )
+
+
+def finding_changed_evidence(finding: Finding, changed_files: list[str]) -> list[str]:
+    matches: list[str] = []
+    for evidence in finding.evidence:
+        for changed_file in changed_files:
+            if (
+                evidence == changed_file
+                or evidence.startswith(f"{changed_file}:")
+                or f"{changed_file}:" in evidence
+                or evidence.endswith(f" {changed_file}")
+            ):
+                matches.append(changed_file)
+    return sorted(dict.fromkeys(matches))
+
+
+def finding_map(result: ScanResult) -> dict[str, Finding]:
+    return {finding.id: finding for finding in result.findings}
+
+
+def diff_scan_result(
+    root: Path,
+    *,
+    diff_range: str | None = None,
+    base_ref: str | None = None,
+    head_ref: str | None = None,
+    use_xcodebuild: bool = False,
+    project: str | None = None,
+    workspace: str | None = None,
+    scheme: str | None = None,
+    submitted_target: str | None = None,
+) -> DiffScanResult:
+    git_root = git_root_for(root)
+    try:
+        scan_subpath = root.resolve().relative_to(git_root)
+    except ValueError:
+        raise ValueError(f"Scan path `{root}` is not inside git repository `{git_root}`.") from None
+
+    if diff_range and (base_ref or head_ref):
+        raise ValueError("Use either `--diff` or `--base-ref`/`--head-ref`, not both.")
+    if diff_range:
+        resolved_base_ref, resolved_head_ref, diff_label = parse_diff_range(diff_range, git_root)
+        head_ref_for_scan = None if resolved_head_ref == "working tree" else resolved_head_ref
+    else:
+        if not base_ref:
+            raise ValueError("Diff mode requires `--diff <range>` or `--base-ref <ref>`.")
+        resolved_base_ref = base_ref
+        resolved_head_ref = head_ref or "working tree"
+        diff_label = None
+        head_ref_for_scan = head_ref
+
+    changed_files = changed_files_for_diff(
+        git_root,
+        root,
+        diff_range=diff_label,
+        base_ref=resolved_base_ref,
+        head_ref=head_ref_for_scan,
+    )
+    base_result = scan_git_ref(
+        git_root,
+        scan_subpath,
+        resolved_base_ref,
+        use_xcodebuild=use_xcodebuild,
+        project=project,
+        workspace=workspace,
+        scheme=scheme,
+        submitted_target=submitted_target,
+    )
+    if head_ref_for_scan:
+        head_result = scan_git_ref(
+            git_root,
+            scan_subpath,
+            head_ref_for_scan,
+            use_xcodebuild=use_xcodebuild,
+            project=project,
+            workspace=workspace,
+            scheme=scheme,
+            submitted_target=submitted_target,
+        )
+    else:
+        head_result = scan_result(
+            root,
+            use_xcodebuild=use_xcodebuild,
+            project=project,
+            workspace=workspace,
+            scheme=scheme,
+            submitted_target=submitted_target,
+        )
+
+    base_findings = finding_map(base_result)
+    head_findings = finding_map(head_result)
+    new_ids = set(head_findings) - set(base_findings)
+    resolved_ids = set(base_findings) - set(head_findings)
+    existing_ids = set(head_findings) & set(base_findings)
+    changed_file_ids = {
+        finding_id
+        for finding_id in existing_ids
+        if finding_changed_evidence(head_findings[finding_id], changed_files)
+    }
+    severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+
+    def sort_findings(findings: Iterable[Finding]) -> list[Finding]:
+        return sorted(findings, key=lambda finding: (severity_order.get(finding.severity, 9), finding.category, finding.title))
+
+    notes: list[str] = []
+    if not changed_files:
+        notes.append("No changed files were reported by git for this diff.")
+    if head_ref_for_scan is None:
+        notes.append("Head scan used the current working tree, including uncommitted changes.")
+    return DiffScanResult(
+        target=str(root),
+        base_ref=resolved_base_ref,
+        head_ref=resolved_head_ref,
+        diff_range=diff_label,
+        changed_files=changed_files,
+        new_findings=sort_findings(head_findings[finding_id] for finding_id in new_ids),
+        changed_file_findings=sort_findings(head_findings[finding_id] for finding_id in changed_file_ids),
+        resolved_findings=sort_findings(base_findings[finding_id] for finding_id in resolved_ids),
+        existing_findings=sort_findings(head_findings[finding_id] for finding_id in existing_ids),
+        head_result=head_result,
+        base_notes=base_result.notes,
+        head_notes=head_result.notes,
+        notes=notes,
+    )
+
+
 def print_markdown(root: Path, result: ScanResult) -> None:
     print("# Apple App Review Risk Scan")
     print()
@@ -1740,6 +2008,50 @@ def compact_result(root: Path, result: ScanResult, max_findings: int = 12) -> di
     }
 
 
+def compact_finding(finding: Finding) -> dict[str, Any]:
+    return {
+        "severity": finding.severity,
+        "id": finding.id,
+        "category": finding.category,
+        "title": finding.title,
+        "confidence": finding.confidence,
+        "first_evidence": finding.evidence[0] if finding.evidence else None,
+    }
+
+
+def compact_diff_result(result: DiffScanResult, max_findings: int = 12) -> dict[str, Any]:
+    max_findings = max(0, max_findings)
+    fail_relevant = [*result.new_findings, *result.changed_file_findings]
+    severity_counts = Counter(finding.severity for finding in fail_relevant)
+    artifact_gaps = [
+        {
+            "name": check.name,
+            "status": check.status,
+        }
+        for check in result.head_result.artifact_checks
+        if check.status != "present_in_repo"
+    ]
+    return {
+        "target": result.target,
+        "base_ref": result.base_ref,
+        "head_ref": result.head_ref,
+        "diff_range": result.diff_range,
+        "changed_files_count": len(result.changed_files),
+        "changed_files_sample": result.changed_files[:20],
+        "scoped_target": result.head_result.scoped_target,
+        "new_findings_count": len(result.new_findings),
+        "changed_file_findings_count": len(result.changed_file_findings),
+        "resolved_findings_count": len(result.resolved_findings),
+        "existing_findings_count": len(result.existing_findings),
+        "fail_relevant_finding_counts": dict(severity_counts),
+        "new_findings": [compact_finding(finding) for finding in result.new_findings[:max_findings]],
+        "changed_file_findings": [compact_finding(finding) for finding in result.changed_file_findings[:max_findings]],
+        "resolved_findings": [compact_finding(finding) for finding in result.resolved_findings[:max_findings]],
+        "artifact_gaps": artifact_gaps,
+        "notes": [*result.notes, *result.head_notes][:8],
+    }
+
+
 def print_compact(root: Path, result: ScanResult, max_findings: int = 12) -> None:
     summary = compact_result(root, result, max_findings=max_findings)
     print("# Apple App Review Risk Scan Summary")
@@ -1786,17 +2098,149 @@ def print_compact(root: Path, result: ScanResult, max_findings: int = 12) -> Non
             print(f"- {truncate(note)}")
 
 
+def print_compact_diff(result: DiffScanResult, max_findings: int = 12) -> None:
+    summary = compact_diff_result(result, max_findings=max_findings)
+    print("# Apple App Review Diff Risk Scan Summary")
+    print()
+    print(f"Target: `{summary['target']}`")
+    print(f"Base: `{summary['base_ref']}`")
+    print(f"Head: `{summary['head_ref']}`")
+    if summary["diff_range"]:
+        print(f"Diff: `{summary['diff_range']}`")
+    print(f"Changed files: {summary['changed_files_count']}")
+    if summary["scoped_target"]:
+        print(f"Scoped file scan: {summary['scoped_target']}")
+    counts = summary["fail_relevant_finding_counts"]
+    count_text = ", ".join(f"{severity}={counts.get(severity, 0)}" for severity in ("HIGH", "MEDIUM", "LOW", "INFO"))
+    print(
+        "Findings: "
+        f"new={summary['new_findings_count']}, "
+        f"existing_on_changed_files={summary['changed_file_findings_count']}, "
+        f"resolved={summary['resolved_findings_count']} "
+        f"({count_text})"
+    )
+    print()
+
+    groups = [
+        ("New findings", summary["new_findings"], summary["new_findings_count"]),
+        ("Existing findings touching changed files", summary["changed_file_findings"], summary["changed_file_findings_count"]),
+        ("Resolved findings", summary["resolved_findings"], summary["resolved_findings_count"]),
+    ]
+    for title, findings, total in groups:
+        if not findings:
+            continue
+        print(f"{title}:")
+        for finding in findings:
+            evidence = finding["first_evidence"] or "No evidence captured."
+            print(f"- {finding['severity']} `{finding['id']}`: {finding['title']} ({finding['confidence']})")
+            print(f"  evidence: `{truncate(evidence)}`")
+        omitted = max(0, total - len(findings))
+        if omitted:
+            print(f"- ... {omitted} more omitted; rerun with `--format markdown` or `--format json` for details.")
+        print()
+
+    if summary["artifact_gaps"]:
+        print("Head artifact gaps:")
+        for gap in summary["artifact_gaps"]:
+            print(f"- {gap['name']}: {gap['status']}")
+        print()
+    if summary["notes"]:
+        print("Notes:")
+        for note in summary["notes"]:
+            print(f"- {truncate(note)}")
+
+
+def print_markdown_diff(result: DiffScanResult) -> None:
+    print("# Apple App Review Diff Risk Scan")
+    print()
+    print(f"- Target: `{result.target}`")
+    print(f"- Base: `{result.base_ref}`")
+    print(f"- Head: `{result.head_ref}`")
+    if result.diff_range:
+        print(f"- Diff: `{result.diff_range}`")
+    print(f"- Changed files: {len(result.changed_files)}")
+    if result.head_result.scoped_target:
+        print(f"- Scoped file scan: `{result.head_result.scoped_target}`")
+    print()
+    print("Static heuristic diff results. Treat findings as review leads and verify them against Apple's official guidance.")
+    print()
+    if result.changed_files:
+        print("## Changed Files")
+        print()
+        for path in result.changed_files[:100]:
+            print(f"- `{path}`")
+        if len(result.changed_files) > 100:
+            print(f"- ... {len(result.changed_files) - 100} more")
+        print()
+
+    groups = [
+        ("New Findings", result.new_findings),
+        ("Existing Findings Touching Changed Files", result.changed_file_findings),
+        ("Resolved Findings", result.resolved_findings),
+    ]
+    for title, findings in groups:
+        print(f"## {title}")
+        print()
+        if not findings:
+            print("None.")
+            print()
+            continue
+        print("| Severity | Category | ID | Title | Confidence |")
+        print("| --- | --- | --- | --- | --- |")
+        for finding in findings:
+            print(f"| {finding.severity} | {finding.category} | `{finding.id}` | {finding.title} | {finding.confidence} |")
+        print()
+        for finding in findings:
+            print(f"### [{finding.severity}] {finding.title}")
+            print()
+            print(f"- ID: `{finding.id}`")
+            print(f"- Category: {finding.category}")
+            print(f"- Confidence: {finding.confidence}")
+            changed_evidence = finding_changed_evidence(finding, result.changed_files)
+            if changed_evidence:
+                print(f"- Changed files in evidence: {', '.join(f'`{path}`' for path in changed_evidence)}")
+            print("- Evidence:")
+            for item in finding.evidence:
+                print(f"  - `{item}`")
+            print(f"- Recommendation: {finding.recommendation}")
+            print()
+
+    if result.head_result.artifact_checks:
+        print("## Head App Store Connect Artifact Checks")
+        print()
+        print("| Artifact | Status | Recommendation |")
+        print("| --- | --- | --- |")
+        for check in result.head_result.artifact_checks:
+            print(f"| {check.name} | {check.status} | {check.recommendation} |")
+        print()
+
+    notes = [*result.notes, *result.head_notes]
+    if notes:
+        print("## Notes")
+        print()
+        for note in notes:
+            print(f"- {note}")
+        print()
+
+
+def diff_fail_findings(result: DiffScanResult) -> list[Finding]:
+    return [*result.new_findings, *result.changed_file_findings]
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Scan Apple app repositories for App Review risk signals.")
     parser.add_argument("path", type=Path, help="Path to an Apple app repository or project directory.")
     parser.add_argument("--format", choices=("compact", "markdown", "json", "compact-json"), default="compact")
     parser.add_argument("--max-findings", type=int, default=12, help="Maximum findings to show in compact output.")
-    parser.add_argument("--fail-on", choices=("none", "high", "medium"), default="none")
+    parser.add_argument("--fail-on", choices=("none", "high", "medium"), default="none", help="Exit nonzero for matching severities. In diff mode, only new and changed-file findings are considered.")
     parser.add_argument("--xcodebuild", action="store_true", help="Run xcodebuild -list/-showBuildSettings to extract exact target metadata.")
     parser.add_argument("--project", help="Specific .xcodeproj path to pass to xcodebuild.")
     parser.add_argument("--workspace", help="Specific .xcworkspace path to pass to xcodebuild.")
     parser.add_argument("--scheme", help="Specific scheme to inspect with xcodebuild.")
     parser.add_argument("--submitted-target", help="Xcode target name to use for target-aware file membership scoping.")
+    parser.add_argument("--diff", help="Git diff range to compare, such as `origin/main...HEAD` or `v1.0.0..v1.1.0`.")
+    parser.add_argument("--base-ref", help="Git ref to use as the base version for diff mode.")
+    parser.add_argument("--head-ref", help="Git ref to use as the head version for diff mode. Defaults to the current working tree with --base-ref.")
     args = parser.parse_args(argv)
 
     root = args.path.expanduser().resolve()
@@ -1804,24 +2248,52 @@ def main(argv: list[str]) -> int:
         print(f"Path does not exist: {root}", file=sys.stderr)
         return 2
 
-    result = scan_result(
-        root,
-        use_xcodebuild=args.xcodebuild,
-        project=args.project,
-        workspace=args.workspace,
-        scheme=args.scheme,
-        submitted_target=args.submitted_target,
-    )
-    if args.format == "json":
-        print(json.dumps({"target": str(root), **asdict(result)}, indent=2))
-    elif args.format == "compact-json":
-        print(json.dumps(compact_result(root, result, max_findings=args.max_findings), indent=2))
-    elif args.format == "compact":
-        print_compact(root, result, max_findings=args.max_findings)
-    else:
-        print_markdown(root, result)
+    if args.diff or args.base_ref or args.head_ref:
+        try:
+            diff_result = diff_scan_result(
+                root,
+                diff_range=args.diff,
+                base_ref=args.base_ref,
+                head_ref=args.head_ref,
+                use_xcodebuild=args.xcodebuild,
+                project=args.project,
+                workspace=args.workspace,
+                scheme=args.scheme,
+                submitted_target=args.submitted_target,
+            )
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        if args.format == "json":
+            print(json.dumps(asdict(diff_result), indent=2))
+        elif args.format == "compact-json":
+            print(json.dumps(compact_diff_result(diff_result, max_findings=args.max_findings), indent=2))
+        elif args.format == "compact":
+            print_compact_diff(diff_result, max_findings=args.max_findings)
+        else:
+            print_markdown_diff(diff_result)
 
-    findings = result.findings
+        findings = diff_fail_findings(diff_result)
+    else:
+        result = scan_result(
+            root,
+            use_xcodebuild=args.xcodebuild,
+            project=args.project,
+            workspace=args.workspace,
+            scheme=args.scheme,
+            submitted_target=args.submitted_target,
+        )
+        if args.format == "json":
+            print(json.dumps({"target": str(root), **asdict(result)}, indent=2))
+        elif args.format == "compact-json":
+            print(json.dumps(compact_result(root, result, max_findings=args.max_findings), indent=2))
+        elif args.format == "compact":
+            print_compact(root, result, max_findings=args.max_findings)
+        else:
+            print_markdown(root, result)
+
+        findings = result.findings
+
     if args.fail_on == "high" and any(finding.severity == "HIGH" for finding in findings):
         return 1
     if args.fail_on == "medium" and any(finding.severity in {"HIGH", "MEDIUM"} for finding in findings):

@@ -1,6 +1,6 @@
 ---
 name: app-store-review-risk
-description: Review Apple-platform app repositories for likely App Store Review, Notarization Review, privacy, entitlement, in-app purchase, metadata, and policy rejection risks before submission. Use when Codex is asked to audit iOS, iPadOS, macOS, watchOS, tvOS, or visionOS code/configuration for App Store approval readiness, preflight a release, inspect Info.plist, entitlements, PrivacyInfo.xcprivacy, StoreKit, subscriptions, Sign in with Apple, account deletion, UGC, permissions, tracking, or other Apple review-sensitive behavior.
+description: Review Apple-platform app repositories or Git diffs for likely App Store Review, Notarization Review, privacy, entitlement, in-app purchase, metadata, and policy rejection risks before submission. Use when Codex is asked to audit iOS, iPadOS, macOS, watchOS, tvOS, or visionOS code/configuration for App Store approval readiness, preflight a release or PR diff, inspect Info.plist, entitlements, PrivacyInfo.xcprivacy, StoreKit, subscriptions, Sign in with Apple, account deletion, UGC, permissions, tracking, or other Apple review-sensitive behavior.
 ---
 
 # App Store Review Risk
@@ -22,7 +22,7 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
 python3 /path/to/app-store-review-risk/scripts/scan_apple_app_review_risks.py /path/to/app/repo
 ```
 
-The default scanner output is compact; use it first. Use `--submitted-target <target>` when the submitted Xcode target is known so code-pattern findings ignore files from other targets. Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format markdown` or `--format json` only when drilling into specific finding IDs or feeding another tool. Use `--format compact-json` when structured output is needed but token budget matters. Treat scanner findings as leads, not verdicts.
+The default scanner output is compact; use it first. Use `--submitted-target <target>` when the submitted Xcode target is known so code-pattern findings ignore files from other targets. For PR or release-delta reviews, use `--diff <range>` or `--base-ref <ref> [--head-ref <ref>]` to compare versions and prioritize new findings plus existing findings that touch changed files. Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format markdown` or `--format json` only when drilling into specific finding IDs or feeding another tool. Use `--format compact-json` when structured output is needed but token budget matters. Treat scanner findings as leads, not verdicts.
 
 3. Read `references/apple-platform-risk-areas.md` for the shared risk map, then read only the platform file(s) matching the target matrix:
    - `references/ios-ipados.md` for iOS/iPadOS apps and iOS apps distributed through notarization.
@@ -54,6 +54,7 @@ The default scanner output is compact; use it first. Use `--submitted-target <ta
 
 - Start with compact scanner output and the target matrix; do not paste full JSON or full markdown into the final answer.
 - Scope the scanner with `--submitted-target` when multiple Xcode targets exist, especially if the repo includes examples, admin tools, fixtures, or tests.
+- For diff reviews, lead with `new_findings` and `changed_file_findings`; keep existing unchanged findings secondary unless they are blocking release readiness.
 - Load only `apple-platform-risk-areas.md`, the platform reference(s) matching the target matrix, and `app-store-connect-artifacts.md` if metadata evidence is missing.
 - Quote only the highest-value evidence lines for each reported risk. Use finding IDs to refer back to scanner output.
 - Browse or cite Apple docs only for current high-risk or policy-sensitive conclusions; prefer the App Review Guidelines first, then HIG or implementation docs.
