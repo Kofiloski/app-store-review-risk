@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import re
 import subprocess
 import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -19,11 +21,21 @@ SKIP_DIRS = {
     ".build",
     ".git",
     ".swiftpm",
+    ".derivedData",
+    ".cache",
+    ".claude",
     "Build",
     "DerivedData",
+    "Index.noindex",
+    "Logs",
+    "ModuleCache.noindex",
     "Pods",
+    "SourcePackages",
+    "artifacts",
     "build",
     "node_modules",
+    "tmp",
+    "xcuserdata",
 }
 
 TEXT_EXTENSIONS = {
@@ -72,6 +84,28 @@ PLATFORM_SIGNAL_PATTERNS: dict[str, list[str]] = {
 DEVICE_FAMILY_PLATFORMS = {
     "1": "iOS",
     "2": "iPadOS",
+}
+
+APP_PRODUCT_TYPES = {
+    "APPL",
+    "com.apple.product-type.application",
+    "com.apple.product-type.application.tv",
+    "com.apple.product-type.application.watchapp2",
+}
+
+TEST_PRODUCT_TYPES = {
+    "com.apple.product-type.bundle.ui-testing",
+    "com.apple.product-type.bundle.unit-test",
+}
+
+BUNDLED_PRODUCT_TYPES = {
+    "com.apple.product-type.app-extension",
+    "com.apple.product-type.framework",
+    "com.apple.product-type.messages-extension",
+    "com.apple.product-type.sticker-pack",
+    "com.apple.product-type.tv-app-extension",
+    "com.apple.product-type.watchkit2-extension",
+    "com.apple.product-type.xpc-service",
 }
 
 PERMISSION_CLUES: dict[str, list[str]] = {
@@ -184,8 +218,11 @@ ACCOUNT_PATTERNS = [
     r"\bcreate account\b",
     r"\bsign up\b",
     r"\bsignup\b",
-    r"\bregister\b",
+    r"\bregister account\b",
+    r"\bcreateUser\b",
+    r"\bcreate user\b",
     r"\bAuth\.auth\b",
+    r"\blog in\b",
     r"\blogin\b",
 ]
 
@@ -224,8 +261,12 @@ PLACEHOLDER_PATTERNS = [
     r"example\.com",
     r"localhost",
     r"127\.0\.0\.1",
-    r"\bplaceholder\b",
     r"\bcoming soon\b",
+]
+
+PLACEHOLDER_EXCLUDE_PATTERNS = [
+    r"\.redacted\(reason:\s*\.placeholder\)",
+    r"\bRedactionReasons\.placeholder\b",
 ]
 
 PRIVATE_API_PATTERNS = [
@@ -287,6 +328,15 @@ class TargetSummary:
 
 
 @dataclass
+class TargetMembership:
+    target: str
+    product_type: str | None
+    file_count: int
+    files: list[str]
+    evidence: list[str]
+
+
+@dataclass
 class ArtifactCheck:
     name: str
     status: str
@@ -304,6 +354,8 @@ class Suppression:
 class ScanResult:
     target_platforms: list[TargetPlatform]
     targets: list[TargetSummary]
+    target_memberships: list[TargetMembership]
+    scoped_target: str | None
     findings: list[Finding]
     artifact_checks: list[ArtifactCheck]
     suppressions_applied: list[Suppression]
@@ -315,11 +367,14 @@ def slugify(value: str) -> str:
 
 
 def iter_files(root: Path) -> Iterable[Path]:
-    for path in root.rglob("*"):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if path.is_file():
-            yield path
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if dirname not in SKIP_DIRS and not dirname.endswith((".noindex", ".xcresult"))
+        ]
+        for filename in filenames:
+            yield Path(dirpath) / filename
 
 
 def rel(path: Path, root: Path) -> str:
@@ -329,6 +384,7 @@ def rel(path: Path, root: Path) -> str:
         return str(path)
 
 
+@lru_cache(maxsize=8192)
 def read_text(path: Path) -> str:
     if path.stat().st_size > 2_000_000:
         return ""
@@ -355,8 +411,15 @@ def plist_key_values(plists: list[tuple[Path, Any]], key: str, root: Path) -> li
     return values
 
 
-def text_hits(files: list[Path], patterns: list[str], root: Path, max_hits: int = 8) -> list[str]:
+def text_hits(
+    files: list[Path],
+    patterns: list[str],
+    root: Path,
+    max_hits: int = 8,
+    exclude_patterns: list[str] | None = None,
+) -> list[str]:
     compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+    exclude_compiled = [re.compile(pattern, re.IGNORECASE) for pattern in exclude_patterns or []]
     hits: list[str] = []
     for path in files:
         if path.suffix not in TEXT_EXTENSIONS:
@@ -365,6 +428,8 @@ def text_hits(files: list[Path], patterns: list[str], root: Path, max_hits: int 
         if not text:
             continue
         for line_number, line in enumerate(text.splitlines(), start=1):
+            if any(pattern.search(line) for pattern in exclude_compiled):
+                continue
             if any(pattern.search(line) for pattern in compiled):
                 snippet = line.strip()
                 if len(snippet) > 160:
@@ -419,6 +484,12 @@ def split_build_setting(value: str | None) -> list[str]:
     return [part.strip().strip('"') for part in re.split(r"[,\s]+", value) if part.strip().strip('"')]
 
 
+def has_build_setting_reference(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(re.search(r"\$\([^)]+\)|\$\{[^}]+\}", value.strip()))
+
+
 def platforms_from_settings(settings: dict[str, str]) -> list[str]:
     platforms: set[str] = set()
     sdkroot = settings.get("SDKROOT", "")
@@ -444,6 +515,11 @@ def platforms_from_settings(settings: dict[str, str]) -> list[str]:
 
 
 def infer_submission_path(platforms: list[str], settings: dict[str, str]) -> str:
+    product_type = settings.get("PRODUCT_TYPE", "")
+    if product_type in TEST_PRODUCT_TYPES:
+        return "Not submitted app target"
+    if product_type in BUNDLED_PRODUCT_TYPES or "extension" in product_type:
+        return "Bundled with containing app"
     if "macOS" in platforms and settings.get("ENABLE_HARDENED_RUNTIME") == "YES":
         return "macOS App Store or notarization"
     if platforms:
@@ -603,10 +679,313 @@ def parse_pbx_settings(text: str) -> dict[str, str]:
     return settings
 
 
+def pbx_unquote(value: str) -> str:
+    value = value.strip()
+    if value.startswith('"') and value.endswith('"'):
+        value = value[1:-1]
+    return value.replace('\\"', '"')
+
+
+def parse_pbx_objects(text: str) -> dict[str, tuple[str, str]]:
+    objects: dict[str, tuple[str, str]] = {}
+    index = 0
+    pattern = re.compile(r"(?m)^\s*([A-F0-9]{24}) /\* ([^*]+) \*/ = \{")
+    while True:
+        match = pattern.search(text, index)
+        if not match:
+            break
+        start = match.end()
+        depth = 1
+        position = start
+        while position < len(text) and depth:
+            char = text[position]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            position += 1
+        body = text[start : position - 1]
+        objects[match.group(1)] = (match.group(2), body)
+        index = position
+    return objects
+
+
+def parse_pbx_list(body: str, key: str) -> list[str]:
+    match = re.search(rf"\b{re.escape(key)}\s*=\s*\((.*?)\);", body, re.DOTALL)
+    if not match:
+        return []
+    return re.findall(r"\b([A-F0-9]{24})\b", match.group(1))
+
+
+def parse_pbx_scalar(body: str, key: str) -> str | None:
+    match = re.search(rf"\b{re.escape(key)}\s*=\s*([^;\n]+);", body)
+    if not match:
+        return None
+    return pbx_unquote(match.group(1))
+
+
+def resolve_file_ref_path(file_id: str, objects: dict[str, tuple[str, str]], cache: dict[str, str]) -> str | None:
+    if file_id in cache:
+        return cache[file_id]
+    item = objects.get(file_id)
+    if not item:
+        return None
+    name, body = item
+    isa = parse_pbx_scalar(body, "isa")
+    if isa not in {"PBXFileReference", "PBXVariantGroup", "PBXGroup"}:
+        return None
+    path = parse_pbx_scalar(body, "path") or parse_pbx_scalar(body, "name") or name
+    if not path:
+        return None
+    cache[file_id] = path
+    return path
+
+
+def normalize_member_path(path: str, all_files_by_name: dict[str, list[Path]], root: Path) -> str | None:
+    clean = path.strip().strip('"')
+    if not clean:
+        return None
+    clean = clean.replace("$(SRCROOT)/", "").replace("${SRCROOT}/", "").replace("$(PROJECT_DIR)/", "").replace("${PROJECT_DIR}/", "")
+    candidate = (root / clean).resolve()
+    if candidate.exists() and candidate.is_file():
+        return rel(candidate, root)
+    by_name = all_files_by_name.get(Path(clean).name, [])
+    if len(by_name) == 1:
+        return rel(by_name[0], root)
+    suffix_matches = [path for path in by_name if str(path).endswith(clean)]
+    if len(suffix_matches) == 1:
+        return rel(suffix_matches[0], root)
+    return clean
+
+
+def load_xml_pbx_objects(project_file: Path) -> dict[str, Any] | None:
+    try:
+        with project_file.open("rb") as handle:
+            data = plistlib.load(handle)
+    except Exception:
+        return None
+    objects = data.get("objects") if isinstance(data, dict) else None
+    return objects if isinstance(objects, dict) else None
+
+
+def resolve_xml_file_ref_path(file_id: str, objects: dict[str, Any], cache: dict[str, str]) -> str | None:
+    if file_id in cache:
+        return cache[file_id]
+    item = objects.get(file_id)
+    if not isinstance(item, dict):
+        return None
+    if item.get("isa") not in {"PBXFileReference", "PBXVariantGroup", "PBXGroup"}:
+        return None
+    path = item.get("path") or item.get("name")
+    if not isinstance(path, str):
+        return None
+    cache[file_id] = path
+    return path
+
+
+def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: dict[str, Any], files: list[Path]) -> list[TargetMembership]:
+    all_files_by_name: dict[str, list[Path]] = {}
+    for path in files:
+        all_files_by_name.setdefault(path.name, []).append(path)
+
+    file_ref_cache: dict[str, str] = {}
+    build_file_to_path: dict[str, str] = {}
+    for object_id, item in objects.items():
+        if not isinstance(item, dict) or item.get("isa") != "PBXBuildFile":
+            continue
+        file_ref = item.get("fileRef")
+        if not isinstance(file_ref, str):
+            continue
+        raw_path = resolve_xml_file_ref_path(file_ref, objects, file_ref_cache)
+        if not raw_path:
+            continue
+        normalized = normalize_member_path(raw_path, all_files_by_name, root)
+        if normalized:
+            build_file_to_path[object_id] = normalized
+
+    memberships: list[TargetMembership] = []
+    for item in objects.values():
+        if not isinstance(item, dict) or item.get("isa") != "PBXNativeTarget":
+            continue
+        target_name = str(item.get("name") or item.get("productName") or "UnnamedTarget")
+        member_files: set[str] = set()
+        phase_names: list[str] = []
+        for phase_id in item.get("buildPhases", []):
+            phase = objects.get(phase_id)
+            if not isinstance(phase, dict):
+                continue
+            phase_isa = phase.get("isa")
+            if phase_isa not in {"PBXSourcesBuildPhase", "PBXResourcesBuildPhase", "PBXFrameworksBuildPhase", "PBXCopyFilesBuildPhase"}:
+                continue
+            phase_names.append(str(phase_isa))
+            for build_file_id in phase.get("files", []):
+                path = build_file_to_path.get(build_file_id)
+                if path:
+                    member_files.add(path)
+        memberships.append(
+            TargetMembership(
+                target=target_name,
+                product_type=item.get("productType") if isinstance(item.get("productType"), str) else None,
+                file_count=len(member_files),
+                files=sorted(member_files),
+                evidence=[f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"],
+            )
+        )
+    return memberships
+
+
+def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMembership]:
+    all_files_by_name: dict[str, list[Path]] = {}
+    for path in files:
+        all_files_by_name.setdefault(path.name, []).append(path)
+
+    memberships: list[TargetMembership] = []
+    for project_file in [path for path in files if path.name == "project.pbxproj"]:
+        xml_objects = load_xml_pbx_objects(project_file)
+        if xml_objects:
+            memberships.extend(parse_xml_pbx_target_memberships(root, project_file, xml_objects, files))
+            continue
+        text = read_text(project_file)
+        objects = parse_pbx_objects(text)
+        file_ref_cache: dict[str, str] = {}
+        build_file_to_path: dict[str, str] = {}
+        for object_id, (object_name, body) in objects.items():
+            if parse_pbx_scalar(body, "isa") != "PBXBuildFile":
+                continue
+            file_ref = parse_pbx_scalar(body, "fileRef")
+            if not file_ref:
+                continue
+            raw_path = resolve_file_ref_path(file_ref, objects, file_ref_cache) or object_name
+            normalized = normalize_member_path(raw_path, all_files_by_name, root)
+            if normalized:
+                build_file_to_path[object_id] = normalized
+
+        for _, (target_name, body) in objects.items():
+            if parse_pbx_scalar(body, "isa") != "PBXNativeTarget":
+                continue
+            build_phase_ids = parse_pbx_list(body, "buildPhases")
+            member_files: set[str] = set()
+            phase_names: list[str] = []
+            for phase_id in build_phase_ids:
+                phase = objects.get(phase_id)
+                if not phase:
+                    continue
+                phase_name, phase_body = phase
+                phase_isa = parse_pbx_scalar(phase_body, "isa")
+                if phase_isa not in {"PBXSourcesBuildPhase", "PBXResourcesBuildPhase", "PBXFrameworksBuildPhase", "PBXCopyFilesBuildPhase"}:
+                    continue
+                phase_names.append(phase_isa)
+                for build_file_id in parse_pbx_list(phase_body, "files"):
+                    path = build_file_to_path.get(build_file_id)
+                    if path:
+                        member_files.add(path)
+            memberships.append(
+                TargetMembership(
+                    target=target_name,
+                    product_type=parse_pbx_scalar(body, "productType"),
+                    file_count=len(member_files),
+                    files=sorted(member_files),
+                    evidence=[f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"],
+                )
+            )
+    return memberships
+
+
+def select_target_membership(
+    memberships: list[TargetMembership],
+    submitted_target: str | None,
+    notes: list[str],
+) -> TargetMembership | None:
+    usable = [membership for membership in memberships if membership.file_count > 0]
+    if submitted_target:
+        for membership in usable:
+            if membership.target == submitted_target:
+                return membership
+        lowered = submitted_target.lower()
+        fuzzy = [membership for membership in usable if lowered in membership.target.lower()]
+        if len(fuzzy) == 1:
+            return fuzzy[0]
+        notes.append(f"Target membership not scoped: submitted target `{submitted_target}` was not uniquely found.")
+        return None
+    app_memberships = [
+        membership
+        for membership in usable
+        if membership.product_type in APP_PRODUCT_TYPES
+    ]
+    if len(app_memberships) == 1:
+        notes.append(f"Automatically scoped file scan to sole app target `{app_memberships[0].target}`.")
+        return app_memberships[0]
+    if len(usable) == 1:
+        notes.append(f"Automatically scoped file scan to sole target `{usable[0].target}`.")
+        return usable[0]
+    if usable:
+        notes.append("Target membership discovered but not scoped; pass `--submitted-target <target>` to reduce cross-target noise.")
+    return None
+
+
+def scoped_text_files(
+    text_files: list[Path],
+    root: Path,
+    membership: TargetMembership | None,
+) -> list[Path]:
+    if membership is None:
+        return text_files
+    member_paths = set(membership.files)
+    always_include_suffixes = {".plist", ".entitlements", ".xcent", ".xcprivacy", ".xcconfig"}
+    always_include_names = {"project.pbxproj", "Package.swift"}
+    scoped: list[Path] = []
+    for path in text_files:
+        relative = rel(path, root)
+        if relative in member_paths or path.suffix in always_include_suffixes or path.name in always_include_names:
+            scoped.append(path)
+    return scoped
+
+
+def discover_xml_static_targets(root: Path, project_file: Path, objects: dict[str, Any]) -> list[TargetSummary]:
+    targets: list[TargetSummary] = []
+    for item in objects.values():
+        if not isinstance(item, dict) or item.get("isa") != "PBXNativeTarget":
+            continue
+        settings: dict[str, str] = {}
+        config_list_id = item.get("buildConfigurationList")
+        config_list = objects.get(config_list_id) if isinstance(config_list_id, str) else None
+        config_ids = config_list.get("buildConfigurations", []) if isinstance(config_list, dict) else []
+        for config_id in config_ids:
+            config = objects.get(config_id)
+            if not isinstance(config, dict):
+                continue
+            build_settings = config.get("buildSettings")
+            if not isinstance(build_settings, dict):
+                continue
+            for key in (
+                "PRODUCT_BUNDLE_IDENTIFIER",
+                "PRODUCT_NAME",
+                "PRODUCT_TYPE",
+                "SDKROOT",
+                "SUPPORTED_PLATFORMS",
+                "TARGETED_DEVICE_FAMILY",
+                "SUPPORTS_MACCATALYST",
+                "ENABLE_HARDENED_RUNTIME",
+            ):
+                value = build_settings.get(key)
+                if value is not None and key not in settings:
+                    settings[key] = str(value)
+        if item.get("productType") and "PRODUCT_TYPE" not in settings:
+            settings["PRODUCT_TYPE"] = str(item["productType"])
+        name = str(item.get("name") or item.get("productName") or settings.get("PRODUCT_NAME") or "Xcode target")
+        if settings:
+            targets.append(target_from_settings(name, settings, [f"{rel(project_file, root)}: target build settings"]))
+    return targets
+
+
 def discover_static_targets(root: Path, files: list[Path], parsed_plists: list[tuple[Path, Any]]) -> list[TargetSummary]:
     targets: list[TargetSummary] = []
     for path in files:
         if path.name != "project.pbxproj":
+            continue
+        xml_objects = load_xml_pbx_objects(path)
+        if xml_objects:
+            targets.extend(discover_xml_static_targets(root, path, xml_objects))
             continue
         settings = parse_pbx_settings(read_text(path))
         if settings:
@@ -628,6 +1007,13 @@ def discover_static_targets(root: Path, files: list[Path], parsed_plists: list[t
         elif isinstance(device_families, list):
             settings["TARGETED_DEVICE_FAMILY"] = ",".join(str(item) for item in device_families)
         if settings:
+            identity_values = [settings.get("PRODUCT_NAME"), settings.get("PRODUCT_BUNDLE_IDENTIFIER")]
+            identity_is_unresolved = identity_values and all(
+                value is None or has_build_setting_reference(value)
+                for value in identity_values
+            )
+            if targets and identity_is_unresolved:
+                continue
             targets.append(target_from_settings(settings.get("PRODUCT_NAME", rel(path, root)), settings, [f"{rel(path, root)}: Info.plist"]))
     return targets
 
@@ -948,6 +1334,7 @@ def scan_result(
     project: str | None = None,
     workspace: str | None = None,
     scheme: str | None = None,
+    submitted_target: str | None = None,
 ) -> ScanResult:
     files = list(iter_files(root))
     text_files = [path for path in files if path.suffix in TEXT_EXTENSIONS]
@@ -965,6 +1352,10 @@ def scan_result(
     entitlement_plists = [(path, data) for path, data in parsed_plists if path.suffix in {".entitlements", ".xcent"}]
     findings: list[Finding] = []
     notes: list[str] = []
+
+    target_memberships = parse_pbx_target_memberships(root, files)
+    selected_membership = select_target_membership(target_memberships, submitted_target, notes)
+    scan_text_files = scoped_text_files(text_files, root, selected_membership)
 
     targets = discover_static_targets(root, files, parsed_plists)
     if use_xcodebuild:
@@ -987,10 +1378,10 @@ def scan_result(
             "privacy-no-privacy-manifest",
         )
 
-    validate_privacy_manifests(root, privacy_manifest_paths, privacy_manifests, invalid_plists, text_files, findings)
+    validate_privacy_manifests(root, privacy_manifest_paths, privacy_manifests, invalid_plists, scan_text_files, findings)
 
     for usage_key, patterns in PERMISSION_CLUES.items():
-        hits = text_hits(text_files, patterns, root, max_hits=4)
+        hits = text_hits(scan_text_files, patterns, root, max_hits=4)
         accepted_keys = [usage_key, *PERMISSION_ALTERNATIVE_KEYS.get(usage_key, [])]
         values = []
         for accepted_key in accepted_keys:
@@ -1021,7 +1412,7 @@ def scan_result(
                     f"permissions-vague-{slugify(usage_key)}",
                 )
 
-    att_hits = text_hits(text_files, [r"\bATTrackingManager\b", r"\bAppTrackingTransparency\b", r"\bASIdentifierManager\b", r"\badvertisingIdentifier\b"], root)
+    att_hits = text_hits(scan_text_files, [r"\bATTrackingManager\b", r"\bAppTrackingTransparency\b", r"\bASIdentifierManager\b", r"\badvertisingIdentifier\b"], root)
     if att_hits and not plist_has_key(info_plists, "NSUserTrackingUsageDescription"):
         add(
             findings,
@@ -1065,7 +1456,7 @@ def scan_result(
                 f"storekit-{slugify(key)}",
             )
 
-    external_purchase_hits = text_hits(text_files, EXTERNAL_PURCHASE_PATTERNS, root)
+    external_purchase_hits = text_hits(scan_text_files, EXTERNAL_PURCHASE_PATTERNS, root)
     if external_purchase_hits:
         add(
             findings,
@@ -1078,8 +1469,8 @@ def scan_result(
             "storekit-external-purchase-language",
         )
 
-    storekit_hits = text_hits(text_files, STOREKIT_PATTERNS, root, max_hits=5)
-    if storekit_hits and not all_text_has(text_files, RESTORE_PATTERNS, root):
+    storekit_hits = text_hits(scan_text_files, STOREKIT_PATTERNS, root, max_hits=5)
+    if storekit_hits and not all_text_has(scan_text_files, RESTORE_PATTERNS, root):
         add(
             findings,
             "MEDIUM",
@@ -1091,8 +1482,8 @@ def scan_result(
             "storekit-missing-restore-path",
         )
 
-    social_hits = text_hits(text_files, SOCIAL_LOGIN_PATTERNS, root)
-    if social_hits and not all_text_has(text_files, APPLE_SIGN_IN_PATTERNS, root):
+    social_hits = text_hits(scan_text_files, SOCIAL_LOGIN_PATTERNS, root)
+    if social_hits and not all_text_has(scan_text_files, APPLE_SIGN_IN_PATTERNS, root):
         add(
             findings,
             "MEDIUM",
@@ -1104,8 +1495,8 @@ def scan_result(
             "authentication-third-party-login-without-apple",
         )
 
-    account_hits = text_hits(text_files, ACCOUNT_PATTERNS, root, max_hits=6)
-    if account_hits and not all_text_has(text_files, DELETE_ACCOUNT_PATTERNS, root):
+    account_hits = text_hits(scan_text_files, ACCOUNT_PATTERNS, root, max_hits=6)
+    if account_hits and not all_text_has(scan_text_files, DELETE_ACCOUNT_PATTERNS, root):
         add(
             findings,
             "MEDIUM",
@@ -1117,8 +1508,8 @@ def scan_result(
             "accounts-missing-account-deletion-flow",
         )
 
-    ugc_hits = text_hits(text_files, UGC_PATTERNS, root, max_hits=6)
-    if ugc_hits and not all_text_has(text_files, MODERATION_PATTERNS, root):
+    ugc_hits = text_hits(scan_text_files, UGC_PATTERNS, root, max_hits=6)
+    if ugc_hits and not all_text_has(scan_text_files, MODERATION_PATTERNS, root):
         add(
             findings,
             "MEDIUM",
@@ -1143,7 +1534,7 @@ def scan_result(
             "background-ui-background-modes-enabled",
         )
 
-    private_hits = text_hits(text_files, PRIVATE_API_PATTERNS, root)
+    private_hits = text_hits(scan_text_files, PRIVATE_API_PATTERNS, root)
     if private_hits:
         add(
             findings,
@@ -1156,7 +1547,7 @@ def scan_result(
             "private-api-dynamic-private-selector",
         )
 
-    placeholder_hits = text_hits(text_files, PLACEHOLDER_PATTERNS, root, max_hits=10)
+    placeholder_hits = text_hits(scan_text_files, PLACEHOLDER_PATTERNS, root, max_hits=10, exclude_patterns=PLACEHOLDER_EXCLUDE_PATTERNS)
     if placeholder_hits:
         add(
             findings,
@@ -1176,6 +1567,8 @@ def scan_result(
     return ScanResult(
         target_platforms=target_platforms,
         targets=targets,
+        target_memberships=target_memberships,
+        scoped_target=selected_membership.target if selected_membership else None,
         findings=findings,
         artifact_checks=artifact_checks,
         suppressions_applied=suppressions_applied,
@@ -1204,6 +1597,12 @@ def print_markdown(root: Path, result: ScanResult) -> None:
                 f"| {target.name} | {target.bundle_identifier or 'unknown'} | {target.product_type or 'unknown'} | "
                 f"{', '.join(target.platforms) or 'unknown'} | {target.submission_path} | {'; '.join(target.evidence)} |"
             )
+        print()
+    if result.scoped_target:
+        print(f"Scoped file scan: `{result.scoped_target}`")
+        print()
+    elif result.target_memberships:
+        print("Target memberships discovered; pass `--submitted-target <target>` to scope code-pattern findings.")
         print()
     if result.target_platforms:
         print("## Likely Platform Targets")
@@ -1299,6 +1698,14 @@ def compact_result(root: Path, result: ScanResult, max_findings: int = 12) -> di
         }
         for target in result.targets[:8]
     ]
+    membership_summary = [
+        {
+            "target": membership.target,
+            "product_type": membership.product_type,
+            "file_count": membership.file_count,
+        }
+        for membership in result.target_memberships[:12]
+    ]
     findings = [
         {
             "severity": finding.severity,
@@ -1322,6 +1729,8 @@ def compact_result(root: Path, result: ScanResult, max_findings: int = 12) -> di
         "target": str(root),
         "platforms": platform_summary,
         "targets": target_summary,
+        "target_memberships": membership_summary,
+        "scoped_target": result.scoped_target,
         "finding_counts": dict(severity_counts),
         "findings_shown": findings,
         "findings_omitted": max(0, len(result.findings) - len(findings)),
@@ -1347,6 +1756,11 @@ def print_compact(root: Path, result: ScanResult, max_findings: int = 12) -> Non
         for target in summary["targets"]:
             platforms_text = ", ".join(target["platforms"]) or "unknown"
             print(f"- {target['name']}: {target['bundle_identifier'] or 'unknown'}, {platforms_text}, {target['submission_path']}")
+    if summary["scoped_target"]:
+        print(f"Scoped file scan: {summary['scoped_target']}")
+    elif summary["target_memberships"]:
+        names = ", ".join(f"{item['target']} ({item['file_count']})" for item in summary["target_memberships"])
+        print(f"Target memberships: {names}")
     counts = summary["finding_counts"]
     count_text = ", ".join(f"{severity}={counts.get(severity, 0)}" for severity in ("HIGH", "MEDIUM", "LOW", "INFO"))
     print(f"Findings: {count_text}")
@@ -1382,6 +1796,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--project", help="Specific .xcodeproj path to pass to xcodebuild.")
     parser.add_argument("--workspace", help="Specific .xcworkspace path to pass to xcodebuild.")
     parser.add_argument("--scheme", help="Specific scheme to inspect with xcodebuild.")
+    parser.add_argument("--submitted-target", help="Xcode target name to use for target-aware file membership scoping.")
     args = parser.parse_args(argv)
 
     root = args.path.expanduser().resolve()
@@ -1395,6 +1810,7 @@ def main(argv: list[str]) -> int:
         project=args.project,
         workspace=args.workspace,
         scheme=args.scheme,
+        submitted_target=args.submitted_target,
     )
     if args.format == "json":
         print(json.dumps({"target": str(root), **asdict(result)}, indent=2))

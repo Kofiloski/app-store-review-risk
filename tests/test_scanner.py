@@ -40,6 +40,76 @@ def write_project(root: Path, settings: str) -> None:
     write_text(root / "Fixture.xcodeproj" / "project.pbxproj", settings)
 
 
+def write_xml_project(root: Path, objects: dict) -> None:
+    path = root / "Fixture.xcodeproj" / "project.pbxproj"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        plistlib.dump({"objects": objects}, handle)
+
+
+def fixture_pbxproj() -> str:
+    return """
+// !$*UTF8*$!
+{
+  objects = {
+    AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */ = {isa = PBXFileReference; path = App/AppView.swift; sourceTree = "<group>"; };
+    BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */ = {isa = PBXFileReference; path = Admin/AdminView.swift; sourceTree = "<group>"; };
+    CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */; };
+    DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */; };
+    EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */ = {isa = PBXSourcesBuildPhase; files = (CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */, ); };
+    FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */ = {isa = PBXSourcesBuildPhase; files = (DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */, ); };
+    111111111111111111111111 /* SubmittedApp */ = {isa = PBXNativeTarget; buildPhases = (EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */, ); name = SubmittedApp; productType = "com.apple.product-type.application"; };
+    222222222222222222222222 /* AdminApp */ = {isa = PBXNativeTarget; buildPhases = (FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */, ); name = AdminApp; productType = "com.apple.product-type.application"; };
+  };
+}
+"""
+
+
+def fixture_xml_pbx_objects() -> dict:
+    return {
+        "FILE_APP": {"isa": "PBXFileReference", "path": "App/AppView.swift"},
+        "FILE_TEST": {"isa": "PBXFileReference", "path": "Tests/AppTests.swift"},
+        "BUILD_APP": {"isa": "PBXBuildFile", "fileRef": "FILE_APP"},
+        "BUILD_TEST": {"isa": "PBXBuildFile", "fileRef": "FILE_TEST"},
+        "PHASE_APP": {"isa": "PBXSourcesBuildPhase", "files": ["BUILD_APP"]},
+        "PHASE_TEST": {"isa": "PBXSourcesBuildPhase", "files": ["BUILD_TEST"]},
+        "CONFIG_APP": {
+            "isa": "XCBuildConfiguration",
+            "buildSettings": {
+                "PRODUCT_BUNDLE_IDENTIFIER": "com.example.xml",
+                "PRODUCT_TYPE": "com.apple.product-type.application",
+                "SDKROOT": "iphoneos",
+                "TARGETED_DEVICE_FAMILY": "1",
+            },
+        },
+        "CONFIG_TEST": {
+            "isa": "XCBuildConfiguration",
+            "buildSettings": {
+                "PRODUCT_BUNDLE_IDENTIFIER": "com.example.xmlTests",
+                "PRODUCT_TYPE": "com.apple.product-type.bundle.unit-test",
+                "SDKROOT": "iphoneos",
+                "TARGETED_DEVICE_FAMILY": "1",
+            },
+        },
+        "CONFIG_LIST_APP": {"isa": "XCConfigurationList", "buildConfigurations": ["CONFIG_APP"]},
+        "CONFIG_LIST_TEST": {"isa": "XCConfigurationList", "buildConfigurations": ["CONFIG_TEST"]},
+        "TARGET_APP": {
+            "isa": "PBXNativeTarget",
+            "name": "XmlApp",
+            "productType": "com.apple.product-type.application",
+            "buildPhases": ["PHASE_APP"],
+            "buildConfigurationList": "CONFIG_LIST_APP",
+        },
+        "TARGET_TEST": {
+            "isa": "PBXNativeTarget",
+            "name": "XmlAppTests",
+            "productType": "com.apple.product-type.bundle.unit-test",
+            "buildPhases": ["PHASE_TEST"],
+            "buildConfigurationList": "CONFIG_LIST_TEST",
+        },
+    }
+
+
 class ScannerTests(unittest.TestCase):
     def test_parse_xcodebuild_list_and_build_settings_json(self):
         schemes, targets = scanner.parse_xcodebuild_list_json(
@@ -67,6 +137,17 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(parsed[0].name, "Fixture")
         self.assertEqual(parsed[0].bundle_identifier, "com.example.fixture")
         self.assertEqual(parsed[0].platforms, ["iOS", "iPadOS"])
+
+        test_target = scanner.target_from_settings(
+            "FixtureTests",
+            {
+                "PRODUCT_TYPE": "com.apple.product-type.bundle.unit-test",
+                "SDKROOT": "iphoneos",
+                "TARGETED_DEVICE_FAMILY": "1",
+            },
+            ["test target"],
+        )
+        self.assertEqual(test_target.submission_path, "Not submitted app target")
 
     def test_detects_ios_ipados_fixture_and_missing_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,6 +188,34 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("tracking-missing-nsusertrackingusagedescription", finding_ids)
             self.assertIn("privacy-no-privacy-manifest", finding_ids)
             self.assertTrue(any(check.name == "App Store metadata and screenshots" for check in result.artifact_checks))
+
+    def test_skips_placeholder_info_plist_target_when_project_target_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(
+                root,
+                """
+                PRODUCT_BUNDLE_IDENTIFIER = com.example.fixture;
+                PRODUCT_NAME = Fixture;
+                SDKROOT = iphoneos;
+                TARGETED_DEVICE_FAMILY = 1;
+                """,
+            )
+            write_plist(
+                root / "Info.plist",
+                {
+                    "CFBundleName": "$(PRODUCT_NAME)",
+                    "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+                    "CFBundlePackageType": "APPL",
+                    "UIDeviceFamily": [1],
+                },
+            )
+
+            result = scanner.scan_result(root)
+            target_names = [target.name for target in result.targets]
+
+            self.assertIn("Fixture", target_names)
+            self.assertNotIn("$(PRODUCT_NAME)", target_names)
 
     def test_detects_macos_sandbox_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -221,6 +330,49 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("storekit-external-purchase-language", rendered)
             self.assertIn("more finding", rendered)
             self.assertNotIn("Confirm the app is not steering", rendered)
+
+    def test_submitted_target_scopes_code_pattern_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, fixture_pbxproj())
+            write_text(root / "App" / "AppView.swift", "import SwiftUI\nlet title = \"Home\"\n")
+            write_text(root / "Admin" / "AdminView.swift", 'let copy = "Subscribe on the web"\n')
+
+            unscoped = scanner.scan_result(root)
+            scoped = scanner.scan_result(root, submitted_target="SubmittedApp")
+            unscoped_ids = {finding.id for finding in unscoped.findings}
+            scoped_ids = {finding.id for finding in scoped.findings}
+
+            self.assertIn("storekit-external-purchase-language", unscoped_ids)
+            self.assertNotIn("storekit-external-purchase-language", scoped_ids)
+            self.assertEqual(scoped.scoped_target, "SubmittedApp")
+            self.assertTrue(any(membership.target == "SubmittedApp" for membership in scoped.target_memberships))
+
+    def test_xml_pbxproj_auto_scopes_sole_app_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_xml_project(root, fixture_xml_pbx_objects())
+            write_text(root / "App" / "AppView.swift", "import SwiftUI\nlet title = \"Home\"\n")
+            write_text(root / "Tests" / "AppTests.swift", 'let copy = "Subscribe on the web"\n')
+
+            result = scanner.scan_result(root)
+            finding_ids = {finding.id for finding in result.findings}
+            target_names = {target.name for target in result.targets}
+
+            self.assertEqual(result.scoped_target, "XmlApp")
+            self.assertIn("XmlApp", target_names)
+            self.assertNotIn("storekit-external-purchase-language", finding_ids)
+
+    def test_ignores_swiftui_redacted_placeholder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            write_text(root / "Sources" / "LoadingView.swift", "Text(\"Loading\").redacted(reason: .placeholder)\n")
+
+            result = scanner.scan_result(root)
+            finding_ids = {finding.id for finding in result.findings}
+
+            self.assertNotIn("app-completeness-placeholder-content", finding_ids)
 
 
 if __name__ == "__main__":
