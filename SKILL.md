@@ -19,7 +19,13 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
 2. Run the static scanner when a repo path is available:
 
 ```bash
-python3 /path/to/app-store-review-risk/scripts/scan_apple_app_review_risks.py /path/to/app/repo
+app-store-review-risk /path/to/app/repo
+```
+
+If the CLI is not installed, run the bundled compatibility wrapper instead:
+
+```bash
+/path/to/app-store-review-risk/scripts/scan_apple_app_review_risks.py /path/to/app/repo
 ```
 
 The default scanner output is compact; use it first. Use `--submitted-target <target>` when the submitted Xcode target is known so code-pattern findings ignore files from other targets. For PR or release-delta reviews, use `--diff <range>` or `--base-ref <ref> [--head-ref <ref>]` to compare versions and prioritize new findings plus existing findings that touch changed files. Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format markdown` or `--format json` only when drilling into specific finding IDs or feeding another tool. Use `--format compact-json` when structured output is needed but token budget matters. Treat scanner findings as leads, not verdicts.

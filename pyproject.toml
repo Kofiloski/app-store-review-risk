@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "app-store-review-risk"
+version = "0.1.0"
+description = "Static scanner and Codex skill for Apple App Store review risk preflight checks."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Kristijan Kofiloski" }
+]
+keywords = [
+  "app-store",
+  "apple",
+  "codex-skill",
+  "ios",
+  "macos",
+  "privacy",
+  "review",
+  "storekit"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Quality Assurance"
+]
+
+[project.urls]
+Homepage = "https://github.com/Kofiloski/app-store-review-risk"
+Repository = "https://github.com/Kofiloski/app-store-review-risk"
+Issues = "https://github.com/Kofiloski/app-store-review-risk/issues"
+
+[project.scripts]
+app-store-review-risk = "app_store_review_risk.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

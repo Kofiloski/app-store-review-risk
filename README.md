@@ -25,13 +25,39 @@ Treat scanner findings as review leads, not final policy determinations. Apple R
 - App Store Connect artifact gaps such as screenshots, review notes, privacy answers, support URLs, and demo access
 - Target-aware scanning for projects with tests, extensions, examples, admin tools, or multiple app targets
 
-## Install
+## Install the CLI
+
+With `pipx`:
+
+```bash
+pipx install git+https://github.com/Kofiloski/app-store-review-risk.git
+```
+
+With `pip`:
+
+```bash
+python3 -m pip install git+https://github.com/Kofiloski/app-store-review-risk.git
+```
+
+From a local clone:
+
+```bash
+python3 -m pip install .
+```
+
+After installation, run:
+
+```bash
+app-store-review-risk --help
+```
+
+## Install as a Codex Skill
 
 Clone this repository into a Codex skills directory:
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone <repo-url> "${CODEX_HOME:-$HOME/.codex}/skills/app-store-review-risk"
+git clone https://github.com/Kofiloski/app-store-review-risk.git "${CODEX_HOME:-$HOME/.codex}/skills/app-store-review-risk"
 ```
 
 Then ask Codex to use the skill:
@@ -40,59 +66,65 @@ Then ask Codex to use the skill:
 Use $app-store-review-risk to review this Apple app repo before submission.
 ```
 
-Other AI agents can still use the repository by reading `SKILL.md` and running the scanner script directly.
+Other AI agents can still use the repository by reading `SKILL.md` and running the CLI or source-checkout wrapper directly.
 
 ## Run the Scanner
 
-From this repository:
+After installing the CLI:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app
+app-store-review-risk /path/to/apple-app
 ```
 
 Compact JSON output:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --format compact-json
+app-store-review-risk /path/to/apple-app --format compact-json
 ```
 
 Scope code-pattern findings to a submitted Xcode target:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --submitted-target MyApp
+app-store-review-risk /path/to/apple-app --submitted-target MyApp
 ```
 
 Use `xcodebuild` for more exact target metadata when the project can build or list schemes locally:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --xcodebuild --scheme MyScheme
+app-store-review-risk /path/to/apple-app --xcodebuild --scheme MyScheme
 ```
 
 Review only risks introduced or touched by a Git diff:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --diff origin/main...HEAD
+app-store-review-risk /path/to/apple-app --diff origin/main...HEAD
 ```
 
 Compare an older release to the current working tree:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --base-ref v1.2.0
+app-store-review-risk /path/to/apple-app --base-ref v1.2.0
 ```
 
 Compare two committed refs:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --base-ref v1.2.0 --head-ref v1.3.0
+app-store-review-risk /path/to/apple-app --base-ref v1.2.0 --head-ref v1.3.0
 ```
 
 For CI-style checks:
 
 ```bash
-python3 scripts/scan_apple_app_review_risks.py /path/to/apple-app --fail-on high
+app-store-review-risk /path/to/apple-app --fail-on high
 ```
 
 In diff mode, `--fail-on` applies to new findings and existing findings whose evidence touches changed files, so pre-existing unchanged findings do not fail a PR-style check.
+
+From a source checkout without installing:
+
+```bash
+scripts/scan_apple_app_review_risks.py /path/to/apple-app
+```
 
 ## Output Formats
 
@@ -116,7 +148,9 @@ Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--
 ## Skill Layout
 
 - `SKILL.md`: agent workflow, reporting format, and review discipline
-- `scripts/scan_apple_app_review_risks.py`: deterministic static scanner
+- `pyproject.toml`: Python package metadata and console script entry point
+- `src/app_store_review_risk/`: installable CLI package
+- `scripts/scan_apple_app_review_risks.py`: source-checkout compatibility wrapper
 - `references/`: platform-specific review-risk notes loaded only when needed
 - `agents/openai.yaml`: skill display metadata
 
