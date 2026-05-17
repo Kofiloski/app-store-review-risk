@@ -8,23 +8,39 @@ version = "0.1.0"
 description = "Static scanner and Codex skill for Apple App Store review risk preflight checks."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
 authors = [
   { name = "Kristijan Kofiloski" }
 ]
 keywords = [
   "app-store",
+  "app-review",
   "apple",
+  "app-store-connect",
+  "app-store-review",
+  "ai-agent",
+  "ai-skill",
   "codex-skill",
+  "entitlements",
+  "in-app-purchase",
   "ios",
+  "ipados",
   "macos",
+  "notarization",
   "privacy",
+  "privacy-manifest",
   "review",
-  "storekit"
+  "storekit",
+  "testflight",
+  "visionos",
+  "watchos",
+  "xcode"
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Quality Assurance"

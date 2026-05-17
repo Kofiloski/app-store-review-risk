@@ -4,6 +4,19 @@
 
 It helps identify likely review-risk areas in code, configuration, metadata, privacy declarations, StoreKit usage, entitlements, account flows, user-generated content, and platform-specific UX expectations.
 
+## Agent Usage
+
+Use this skill when an AI agent needs to preflight an Apple app release, pull request, or repository for App Store Review, TestFlight beta review, notarization, privacy, entitlement, StoreKit, or metadata risks.
+
+Prompt examples:
+
+- `Use $app-store-review-risk to review this iOS app before App Store submission.`
+- `Use $app-store-review-risk to check this PR diff for new App Review risks.`
+- `Use $app-store-review-risk to audit PrivacyInfo.xcprivacy, entitlements, StoreKit, subscriptions, and account deletion before release.`
+- `Use $app-store-review-risk to inspect this macOS app for notarization and App Review risk areas.`
+
+Agents should read `SKILL.md` first, run the scanner for a compact risk inventory, then load only the relevant files in `references/` for the detected platform and submission path.
+
 ## Important Notice
 
 This tool does not guarantee App Store approval, TestFlight approval, or notarization acceptance. It is only intended to help teams find possible issues earlier and prepare a cleaner submission.
