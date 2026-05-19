@@ -1,5 +1,7 @@
 # App Store Review Risk
 
+[![CI](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml)
+
 `app-store-review-risk` is a Codex skill and static scanner for reviewing Apple-platform app repositories before App Store, TestFlight, or notarization submission.
 
 It helps identify likely review-risk areas in code, configuration, metadata, privacy declarations, StoreKit usage, entitlements, account flows, user-generated content, and platform-specific UX expectations.
@@ -139,6 +141,23 @@ From a source checkout without installing:
 scripts/scan_apple_app_review_risks.py /path/to/apple-app
 ```
 
+## Example Output
+
+Compact output is designed for quick release or PR triage:
+
+```text
+# Apple App Review Risk Scan Summary
+
+Target: `/path/to/apple-app`
+Platforms: iOS, iPadOS
+Findings: HIGH=1, MEDIUM=2, LOW=0, INFO=0
+
+Top findings:
+- [HIGH] Permissions: Potential protected-resource use without NSCameraUsageDescription
+  id: permissions-missing-nscamerausagedescription
+  evidence: `Sources/CameraView.swift:18: AVCaptureDevice.default(for: .video)`
+```
+
 ## Output Formats
 
 - `compact` is the default, optimized for low token use.
@@ -164,6 +183,7 @@ Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--
 - `pyproject.toml`: Python package metadata and console script entry point
 - `src/app_store_review_risk/`: installable CLI package
 - `scripts/scan_apple_app_review_risks.py`: source-checkout compatibility wrapper
+- `scripts/check-skill.sh`: self-contained local check runner for tests, compile checks, scanner smoke test, and whitespace validation
 - `references/`: platform-specific review-risk notes loaded only when needed
 - `agents/openai.yaml`: skill display metadata
 
@@ -176,6 +196,5 @@ Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--
 ## Validate
 
 ```bash
-python3 -m unittest tests/test_scanner.py
-python3 /path/to/skill-creator/scripts/quick_validate.py .
+./scripts/check-skill.sh
 ```
