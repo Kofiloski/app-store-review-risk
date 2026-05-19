@@ -1,6 +1,6 @@
 ---
 name: app-store-review-risk
-description: Review Apple-platform app repositories, release branches, or Git diffs for likely App Store Review, TestFlight beta review, Notarization Review, privacy, entitlement, in-app purchase, metadata, and policy rejection risks before submission. Use when Codex is asked to audit iOS, iPadOS, macOS, Mac Catalyst, watchOS, tvOS, or visionOS code/configuration for App Store approval readiness, preflight a release or PR diff, inspect Info.plist, entitlements, PrivacyInfo.xcprivacy, privacy manifests, required-reason APIs, App Privacy answers, StoreKit, subscriptions, Sign in with Apple, account deletion, UGC, permissions, tracking, external purchase links, or other Apple review-sensitive behavior.
+description: Review Apple-platform app repositories, release branches, or Git diffs for likely App Store Review, TestFlight beta review, notarization, privacy, entitlement, in-app purchase, metadata, and policy rejection risks before submission. Use when Codex is asked to audit iOS, iPadOS, macOS, Mac Catalyst, watchOS, tvOS, or visionOS code/configuration for App Store approval readiness, preflight a release or PR diff, inspect Info.plist, entitlements, PrivacyInfo.xcprivacy, privacy manifests, required-reason APIs, App Privacy answers, StoreKit, subscriptions, Sign in with Apple, account deletion, UGC, permissions, tracking, external purchase links, or other Apple review-sensitive behavior.
 ---
 
 # App Store Review Risk

@@ -1,4 +1,4 @@
-# iOS And iPadOS Review Focus
+# iOS and iPadOS Review Focus
 
 Use after the target matrix identifies an iOS or iPadOS app target.
 

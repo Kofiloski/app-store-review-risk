@@ -66,6 +66,8 @@ TEXT_EXTENSIONS = {
     ".yaml",
 }
 
+PLIST_EXTENSIONS = {".plist", ".entitlements", ".xcprivacy", ".xcent"}
+
 PLATFORM_FOCUS: dict[str, list[str]] = {
     "iOS": ["privacy strings", "ATT", "StoreKit", "account deletion", "UGC", "location", "background modes", "touch interaction"],
     "iPadOS": ["adaptive layouts", "multitasking", "keyboard and pointer support", "privacy strings", "StoreKit", "account deletion"],
@@ -109,6 +111,12 @@ BUNDLED_PRODUCT_TYPES = {
     "com.apple.product-type.tv-app-extension",
     "com.apple.product-type.watchkit2-extension",
     "com.apple.product-type.xpc-service",
+}
+
+TARGET_FILE_BUILD_SETTINGS = {
+    "CODE_SIGN_ENTITLEMENTS",
+    "INFOPLIST_FILE",
+    "PRODUCT_SETTINGS_PATH",
 }
 
 PERMISSION_CLUES: dict[str, list[str]] = {
@@ -401,7 +409,10 @@ def rel(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
     except ValueError:
-        return str(path)
+        try:
+            return str(path.resolve().relative_to(root.resolve()))
+        except ValueError:
+            return str(path)
 
 
 @lru_cache(maxsize=8192)
@@ -684,8 +695,11 @@ def discover_xcodebuild_targets(
 def parse_pbx_settings(text: str) -> dict[str, str]:
     settings: dict[str, str] = {}
     for key in (
+        "CODE_SIGN_ENTITLEMENTS",
+        "INFOPLIST_FILE",
         "PRODUCT_BUNDLE_IDENTIFIER",
         "PRODUCT_NAME",
+        "PRODUCT_SETTINGS_PATH",
         "PRODUCT_TYPE",
         "SDKROOT",
         "SUPPORTED_PLATFORMS",
@@ -701,6 +715,7 @@ def parse_pbx_settings(text: str) -> dict[str, str]:
 
 def pbx_unquote(value: str) -> str:
     value = value.strip()
+    value = re.sub(r"\s*/\*.*?\*/\s*$", "", value).strip()
     if value.startswith('"') and value.endswith('"'):
         value = value[1:-1]
     return value.replace('\\"', '"')
@@ -744,6 +759,10 @@ def parse_pbx_scalar(body: str, key: str) -> str | None:
     return pbx_unquote(match.group(1))
 
 
+def pbx_target_name(object_name: str, body: str) -> str:
+    return parse_pbx_scalar(body, "name") or parse_pbx_scalar(body, "productName") or object_name
+
+
 def resolve_file_ref_path(file_id: str, objects: dict[str, tuple[str, str]], cache: dict[str, str]) -> str | None:
     if file_id in cache:
         return cache[file_id]
@@ -776,6 +795,42 @@ def normalize_member_path(path: str, all_files_by_name: dict[str, list[Path]], r
     if len(suffix_matches) == 1:
         return rel(suffix_matches[0], root)
     return clean
+
+
+def expand_build_setting_path(value: str, settings: dict[str, str], root: Path) -> str:
+    expanded = value.strip().strip('"')
+    variables = {
+        "PROJECT_DIR": str(root),
+        "SRCROOT": str(root),
+        **settings,
+    }
+
+    def replacement(match: re.Match[str]) -> str:
+        key = match.group(1) or match.group(2)
+        return variables.get(key, match.group(0))
+
+    for _ in range(4):
+        next_value = re.sub(r"\$\(([^)]+)\)|\$\{([^}]+)\}", replacement, expanded)
+        if next_value == expanded:
+            break
+        expanded = next_value
+    return expanded
+
+
+def target_file_paths_from_settings(
+    settings: dict[str, str],
+    all_files_by_name: dict[str, list[Path]],
+    root: Path,
+) -> list[str]:
+    paths: list[str] = []
+    for key in TARGET_FILE_BUILD_SETTINGS:
+        value = settings.get(key)
+        if not value or value.strip() in {"", "$(inherited)"}:
+            continue
+        normalized = normalize_member_path(expand_build_setting_path(value, settings, root), all_files_by_name, root)
+        if normalized:
+            paths.append(normalized)
+    return sorted(dict.fromkeys(paths))
 
 
 def load_xml_pbx_objects(project_file: Path) -> dict[str, Any] | None:
@@ -830,6 +885,7 @@ def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: di
         target_name = str(item.get("name") or item.get("productName") or "UnnamedTarget")
         member_files: set[str] = set()
         phase_names: list[str] = []
+        config_file_count = 0
         for phase_id in item.get("buildPhases", []):
             phase = objects.get(phase_id)
             if not isinstance(phase, dict):
@@ -842,13 +898,31 @@ def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: di
                 path = build_file_to_path.get(build_file_id)
                 if path:
                     member_files.add(path)
+        config_list = objects.get(item.get("buildConfigurationList"))
+        config_ids = config_list.get("buildConfigurations", []) if isinstance(config_list, dict) else []
+        for config_id in config_ids:
+            config = objects.get(config_id)
+            if not isinstance(config, dict):
+                continue
+            build_settings = config.get("buildSettings")
+            if not isinstance(build_settings, dict):
+                continue
+            settings = {str(key): str(value) for key, value in build_settings.items()}
+            settings.setdefault("TARGET_NAME", target_name)
+            settings.setdefault("PRODUCT_NAME", target_name)
+            config_files = target_file_paths_from_settings(settings, all_files_by_name, root)
+            config_file_count += len(config_files)
+            member_files.update(config_files)
+        evidence = [f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"]
+        if config_file_count:
+            evidence.append(f"{rel(project_file, root)}: target build settings referenced {config_file_count} configuration file(s)")
         memberships.append(
             TargetMembership(
                 target=target_name,
                 product_type=item.get("productType") if isinstance(item.get("productType"), str) else None,
                 file_count=len(member_files),
                 files=sorted(member_files),
-                evidence=[f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"],
+                evidence=evidence,
             )
         )
     return memberships
@@ -880,12 +954,14 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
             if normalized:
                 build_file_to_path[object_id] = normalized
 
-        for _, (target_name, body) in objects.items():
+        for _, (object_name, body) in objects.items():
             if parse_pbx_scalar(body, "isa") != "PBXNativeTarget":
                 continue
+            target_name = pbx_target_name(object_name, body)
             build_phase_ids = parse_pbx_list(body, "buildPhases")
             member_files: set[str] = set()
             phase_names: list[str] = []
+            config_file_count = 0
             for phase_id in build_phase_ids:
                 phase = objects.get(phase_id)
                 if not phase:
@@ -899,13 +975,31 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
                     path = build_file_to_path.get(build_file_id)
                     if path:
                         member_files.add(path)
+            config_list_id = parse_pbx_scalar(body, "buildConfigurationList")
+            config_list = objects.get(config_list_id) if config_list_id else None
+            if config_list:
+                _, config_list_body = config_list
+                for config_id in parse_pbx_list(config_list_body, "buildConfigurations"):
+                    config = objects.get(config_id)
+                    if not config:
+                        continue
+                    _, config_body = config
+                    settings = parse_pbx_settings(config_body)
+                    settings.setdefault("TARGET_NAME", target_name)
+                    settings.setdefault("PRODUCT_NAME", target_name)
+                    config_files = target_file_paths_from_settings(settings, all_files_by_name, root)
+                    config_file_count += len(config_files)
+                    member_files.update(config_files)
+            evidence = [f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"]
+            if config_file_count:
+                evidence.append(f"{rel(project_file, root)}: target build settings referenced {config_file_count} configuration file(s)")
             memberships.append(
                 TargetMembership(
                     target=target_name,
                     product_type=parse_pbx_scalar(body, "productType"),
                     file_count=len(member_files),
                     files=sorted(member_files),
-                    evidence=[f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"],
+                    evidence=evidence,
                 )
             )
     return memberships
@@ -951,12 +1045,43 @@ def scoped_text_files(
     if membership is None:
         return text_files
     member_paths = set(membership.files)
-    always_include_suffixes = {".plist", ".entitlements", ".xcent", ".xcprivacy", ".xcconfig"}
     always_include_names = {"project.pbxproj", "Package.swift"}
     scoped: list[Path] = []
     for path in text_files:
         relative = rel(path, root)
-        if relative in member_paths or path.suffix in always_include_suffixes or path.name in always_include_names:
+        if relative in member_paths or path.name in always_include_names:
+            scoped.append(path)
+    return scoped
+
+
+def target_related_dirs(membership: TargetMembership) -> set[Path]:
+    related: set[Path] = set()
+    for member in membership.files:
+        parent = Path(member).parent
+        if parent == Path("."):
+            continue
+        related.add(parent)
+        related.update(ancestor for ancestor in parent.parents if ancestor != Path("."))
+    return related
+
+
+def scoped_plist_files(plist_files: list[Path], root: Path, membership: TargetMembership | None) -> list[Path]:
+    if membership is None:
+        return plist_files
+    member_paths = set(membership.files)
+    related_dirs = target_related_dirs(membership)
+    name_counts = Counter(path.name for path in plist_files)
+    scoped: list[Path] = []
+    for path in plist_files:
+        relative = rel(path, root)
+        relative_path = Path(relative)
+        if relative in member_paths:
+            scoped.append(path)
+            continue
+        if relative_path.parent in related_dirs:
+            scoped.append(path)
+            continue
+        if relative_path.parent == Path(".") and name_counts[path.name] == 1:
             scoped.append(path)
     return scoped
 
@@ -998,6 +1123,33 @@ def discover_xml_static_targets(root: Path, project_file: Path, objects: dict[st
     return targets
 
 
+def discover_pbx_static_targets(root: Path, project_file: Path, objects: dict[str, tuple[str, str]]) -> list[TargetSummary]:
+    targets: list[TargetSummary] = []
+    for object_name, body in objects.values():
+        if parse_pbx_scalar(body, "isa") != "PBXNativeTarget":
+            continue
+        target_name = pbx_target_name(object_name, body)
+        settings: dict[str, str] = {}
+        config_list_id = parse_pbx_scalar(body, "buildConfigurationList")
+        config_list = objects.get(config_list_id) if config_list_id else None
+        if config_list:
+            _, config_list_body = config_list
+            for config_id in parse_pbx_list(config_list_body, "buildConfigurations"):
+                config = objects.get(config_id)
+                if not config:
+                    continue
+                _, config_body = config
+                for key, value in parse_pbx_settings(config_body).items():
+                    if value and key not in settings:
+                        settings[key] = value
+        product_type = parse_pbx_scalar(body, "productType")
+        if product_type:
+            settings.setdefault("PRODUCT_TYPE", product_type)
+        if settings:
+            targets.append(target_from_settings(target_name, settings, [f"{rel(project_file, root)}: target build settings"]))
+    return targets
+
+
 def discover_static_targets(root: Path, files: list[Path], parsed_plists: list[tuple[Path, Any]]) -> list[TargetSummary]:
     targets: list[TargetSummary] = []
     for path in files:
@@ -1007,7 +1159,12 @@ def discover_static_targets(root: Path, files: list[Path], parsed_plists: list[t
         if xml_objects:
             targets.extend(discover_xml_static_targets(root, path, xml_objects))
             continue
-        settings = parse_pbx_settings(read_text(path))
+        text = read_text(path)
+        pbx_targets = discover_pbx_static_targets(root, path, parse_pbx_objects(text))
+        if pbx_targets:
+            targets.extend(pbx_targets)
+            continue
+        settings = parse_pbx_settings(text)
         if settings:
             name = settings.get("PRODUCT_NAME") or path.parent.stem or "Static project settings"
             targets.append(target_from_settings(name, settings, [f"{rel(path, root)}: build settings"]))
@@ -1077,7 +1234,7 @@ def detect_target_platforms(
         platform: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
         for platform, patterns in PLATFORM_SIGNAL_PATTERNS.items()
     }
-    candidate_suffixes = {".pbxproj", ".xcconfig", ".plist", ".entitlements", ".xcent", ".swift", ".m", ".mm", ".h"}
+    candidate_suffixes = {".pbxproj", ".xcconfig", ".swift", ".m", ".mm", ".h", *PLIST_EXTENSIONS}
     for path in files:
         if path.suffix not in candidate_suffixes:
             continue
@@ -1358,8 +1515,18 @@ def scan_result(
 ) -> ScanResult:
     files = list(iter_files(root))
     text_files = [path for path in files if path.suffix in TEXT_EXTENSIONS]
-    plist_files = [path for path in files if path.suffix in {".plist", ".entitlements", ".xcprivacy", ".xcent"}]
-    loaded_plists = [(path, *load_plist(path)) for path in plist_files]
+    all_plist_files = [path for path in files if path.suffix in PLIST_EXTENSIONS]
+    all_loaded_plists = [(path, *load_plist(path)) for path in all_plist_files]
+    all_parsed_plists = [(path, data) for path, data, error in all_loaded_plists if error is None]
+    findings: list[Finding] = []
+    notes: list[str] = []
+
+    target_memberships = parse_pbx_target_memberships(root, files)
+    selected_membership = select_target_membership(target_memberships, submitted_target, notes)
+    scan_text_files = scoped_text_files(text_files, root, selected_membership)
+    plist_files = scoped_plist_files(all_plist_files, root, selected_membership)
+    plist_file_set = set(plist_files)
+    loaded_plists = [(path, data, error) for path, data, error in all_loaded_plists if path in plist_file_set]
     parsed_plists = [(path, data) for path, data, error in loaded_plists if error is None]
     invalid_plists = [(path, error or "unknown plist error") for path, data, error in loaded_plists if error is not None]
     info_plists = [
@@ -1370,20 +1537,19 @@ def scan_result(
     privacy_manifest_paths = [path for path in plist_files if path.name == "PrivacyInfo.xcprivacy"]
     privacy_manifests = [(path, data) for path, data in parsed_plists if path.name == "PrivacyInfo.xcprivacy"]
     entitlement_plists = [(path, data) for path, data in parsed_plists if path.suffix in {".entitlements", ".xcent"}]
-    findings: list[Finding] = []
-    notes: list[str] = []
 
-    target_memberships = parse_pbx_target_memberships(root, files)
-    selected_membership = select_target_membership(target_memberships, submitted_target, notes)
-    scan_text_files = scoped_text_files(text_files, root, selected_membership)
-
-    targets = discover_static_targets(root, files, parsed_plists)
+    targets = discover_static_targets(root, files, all_parsed_plists)
     if use_xcodebuild:
         xcodebuild_targets = discover_xcodebuild_targets(root, project, workspace, scheme, notes)
         if xcodebuild_targets:
             targets = xcodebuild_targets
 
-    target_platforms = detect_target_platforms(root, files, parsed_plists, targets)
+    platform_detection_targets = targets
+    if selected_membership:
+        scoped_targets = [target for target in targets if target.name == selected_membership.target]
+        if scoped_targets:
+            platform_detection_targets = scoped_targets
+    target_platforms = detect_target_platforms(root, scan_text_files, parsed_plists, platform_detection_targets)
 
     has_xcode_artifact = any(path.name == "project.pbxproj" or path.suffix == ".swift" for path in files)
     if has_xcode_artifact and not privacy_manifest_paths:
@@ -1738,6 +1904,127 @@ def finding_changed_evidence(finding: Finding, changed_files: list[str]) -> list
     return sorted(dict.fromkeys(matches))
 
 
+def result_scoped_membership(result: ScanResult) -> TargetMembership | None:
+    if not result.scoped_target:
+        return None
+    for membership in result.target_memberships:
+        if membership.target == result.scoped_target:
+            return membership
+    return None
+
+
+def scoped_changed_files(changed_files: list[str], result: ScanResult) -> list[str]:
+    membership = result_scoped_membership(result)
+    if membership is None:
+        return changed_files
+    member_paths = set(membership.files)
+    related_dirs = target_related_dirs(membership)
+    scoped: list[str] = []
+    for changed_file in changed_files:
+        changed_path = Path(changed_file)
+        if changed_file in member_paths:
+            scoped.append(changed_file)
+            continue
+        if changed_path.suffix in PLIST_EXTENSIONS and (
+            changed_path.parent in related_dirs or changed_path.parent == Path(".")
+        ):
+            scoped.append(changed_file)
+    return scoped
+
+
+def changed_file_signal_finding_ids(root: Path, changed_files: list[str], result: ScanResult) -> set[str]:
+    head_finding_ids = {finding.id for finding in result.findings}
+    changed_paths = [
+        root / changed_file
+        for changed_file in scoped_changed_files(changed_files, result)
+        if (root / changed_file).is_file()
+    ]
+    text_files = [path for path in changed_paths if path.suffix in TEXT_EXTENSIONS]
+    plist_paths = [path for path in changed_paths if path.suffix in PLIST_EXTENSIONS]
+    signal_ids: set[str] = set()
+
+    def has_text_signal(patterns: list[str], exclude_patterns: list[str] | None = None) -> bool:
+        return bool(text_hits(text_files, patterns, root, max_hits=1, exclude_patterns=exclude_patterns))
+
+    for usage_key, patterns in PERMISSION_CLUES.items():
+        if has_text_signal(patterns):
+            accepted_keys = [usage_key, *PERMISSION_ALTERNATIVE_KEYS.get(usage_key, [])]
+            signal_ids.add(f"permissions-missing-{slugify(' or '.join(accepted_keys))}")
+
+    if has_text_signal([r"\bATTrackingManager\b", r"\bAppTrackingTransparency\b", r"\bASIdentifierManager\b", r"\badvertisingIdentifier\b"]):
+        signal_ids.add("tracking-missing-nsusertrackingusagedescription")
+
+    for _, (label, patterns) in REQUIRED_REASON_CLUES.items():
+        if has_text_signal(patterns):
+            signal_ids.add(f"privacy-missing-required-reason-{slugify(label)}")
+
+    if has_text_signal(PRIVACY_COLLECTION_CLUES):
+        signal_ids.add("privacy-collection-clues-without-collected-data-types")
+    if has_text_signal(EXTERNAL_PURCHASE_PATTERNS):
+        signal_ids.add("storekit-external-purchase-language")
+    if has_text_signal(STOREKIT_PATTERNS):
+        signal_ids.add("storekit-missing-restore-path")
+    if has_text_signal(SOCIAL_LOGIN_PATTERNS):
+        signal_ids.add("authentication-third-party-login-without-apple")
+    if has_text_signal(ACCOUNT_PATTERNS):
+        signal_ids.add("accounts-missing-account-deletion-flow")
+    if has_text_signal(UGC_PATTERNS):
+        signal_ids.add("ugc-missing-reporting-blocking-flow")
+    if has_text_signal(PRIVATE_API_PATTERNS):
+        signal_ids.add("private-api-dynamic-private-selector")
+    if has_text_signal(PLACEHOLDER_PATTERNS, exclude_patterns=PLACEHOLDER_EXCLUDE_PATTERNS):
+        signal_ids.add("app-completeness-placeholder-content")
+
+    info_plist_changed = False
+    privacy_manifest_changed = False
+    for path in plist_paths:
+        data, error = load_plist(path)
+        if path.name == "Info.plist":
+            info_plist_changed = True
+        if path.name == "PrivacyInfo.xcprivacy":
+            privacy_manifest_changed = True
+            if error:
+                signal_ids.add("privacy-invalid-privacy-manifest")
+                continue
+            if not isinstance(data, dict):
+                signal_ids.add("privacy-manifest-not-dictionary")
+                continue
+            if not data:
+                signal_ids.add("privacy-empty-privacy-manifest")
+            accessed_api_types = data.get("NSPrivacyAccessedAPITypes")
+            if accessed_api_types is not None and not isinstance(accessed_api_types, list):
+                signal_ids.add("privacy-invalid-accessed-api-types")
+            elif isinstance(accessed_api_types, list):
+                for index, entry in enumerate(accessed_api_types):
+                    if not isinstance(entry, dict):
+                        signal_ids.add(f"privacy-invalid-accessed-api-entry-{index}")
+                        continue
+                    reasons = entry.get("NSPrivacyAccessedAPITypeReasons")
+                    if not entry.get("NSPrivacyAccessedAPIType") or not isinstance(reasons, list) or not reasons:
+                        signal_ids.add(f"privacy-incomplete-accessed-api-entry-{index}")
+            if data.get("NSPrivacyTracking") is True and not data.get("NSPrivacyTrackingDomains"):
+                signal_ids.add("privacy-tracking-without-domains")
+        if error or not isinstance(data, dict):
+            continue
+        for key in SENSITIVE_ENTITLEMENTS:
+            if key in data:
+                signal_ids.add(f"entitlements-{slugify(key)}")
+        for key in ("SKExternalPurchaseLink", "SKExternalPurchaseMultiLink"):
+            if key in data:
+                signal_ids.add(f"storekit-{slugify(key)}")
+        if "UIBackgroundModes" in data:
+            signal_ids.add("background-ui-background-modes-enabled")
+
+    if info_plist_changed:
+        signal_ids.update(finding_id for finding_id in head_finding_ids if finding_id.startswith("permissions-missing-"))
+        signal_ids.update(finding_id for finding_id in head_finding_ids if finding_id == "tracking-missing-nsusertrackingusagedescription")
+    if privacy_manifest_changed:
+        signal_ids.update(finding_id for finding_id in head_finding_ids if finding_id.startswith("privacy-missing-required-reason-"))
+        signal_ids.update(finding_id for finding_id in head_finding_ids if finding_id == "privacy-collection-clues-without-collected-data-types")
+
+    return signal_ids & head_finding_ids
+
+
 def finding_map(result: ScanResult) -> dict[str, Finding]:
     return {finding.id: finding for finding in result.findings}
 
@@ -1816,10 +2103,18 @@ def diff_scan_result(
     new_ids = set(head_findings) - set(base_findings)
     resolved_ids = set(base_findings) - set(head_findings)
     existing_ids = set(head_findings) & set(base_findings)
+    if head_ref_for_scan:
+        with tempfile.TemporaryDirectory(prefix="app-review-risk-head-") as tmp:
+            head_temp_root = Path(tmp)
+            extract_git_archive(git_root, head_ref_for_scan, head_temp_root)
+            changed_signal_root = (head_temp_root / scan_subpath).resolve()
+            changed_signal_ids = changed_file_signal_finding_ids(changed_signal_root, changed_files, head_result)
+    else:
+        changed_signal_ids = changed_file_signal_finding_ids(root, changed_files, head_result)
     changed_file_ids = {
         finding_id
         for finding_id in existing_ids
-        if finding_changed_evidence(head_findings[finding_id], changed_files)
+        if finding_changed_evidence(head_findings[finding_id], changed_files) or finding_id in changed_signal_ids
     }
     severity_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
 

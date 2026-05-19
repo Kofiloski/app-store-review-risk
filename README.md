@@ -27,7 +27,7 @@ Always verify decisions against Apple's official documentation and current requi
 - Human Interface Guidelines: https://developer.apple.com/design/human-interface-guidelines
 - Apple Developer Documentation and App Store Connect guidance for platform-specific implementation, privacy, metadata, entitlement, and distribution requirements
 
-Treat scanner findings as review leads, not final policy determinations. Apple Review, Apple documentation, and App Store Connect configuration remain the source of truth.
+Treat scanner findings as review leads, not final policy determinations. App Review, Apple documentation, and App Store Connect configuration remain the source of truth.
 
 ## What It Covers
 

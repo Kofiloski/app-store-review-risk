@@ -75,6 +75,28 @@ def fixture_pbxproj() -> str:
 """
 
 
+def fixture_pbxproj_with_build_configs() -> str:
+    return """
+// !$*UTF8*$!
+{
+  objects = {
+    AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */ = {isa = PBXFileReference; path = App/AppView.swift; sourceTree = "<group>"; };
+    BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */ = {isa = PBXFileReference; path = Admin/AdminView.swift; sourceTree = "<group>"; };
+    CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */; };
+    DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */; };
+    EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */ = {isa = PBXSourcesBuildPhase; files = (CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */, ); };
+    FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */ = {isa = PBXSourcesBuildPhase; files = (DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */, ); };
+    A11111111111111111111111 /* App Debug */ = {isa = XCBuildConfiguration; buildSettings = { INFOPLIST_FILE = App/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.app; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
+    A22222222222222222222222 /* App Config List */ = {isa = XCConfigurationList; buildConfigurations = (A11111111111111111111111 /* App Debug */, ); };
+    B11111111111111111111111 /* Admin Debug */ = {isa = XCBuildConfiguration; buildSettings = { INFOPLIST_FILE = Admin/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.example.admin; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = macosx; }; name = Debug; };
+    B22222222222222222222222 /* Admin Config List */ = {isa = XCConfigurationList; buildConfigurations = (B11111111111111111111111 /* Admin Debug */, ); };
+    111111111111111111111111 /* SubmittedApp */ = {isa = PBXNativeTarget; buildConfigurationList = A22222222222222222222222 /* App Config List */; buildPhases = (EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */, ); name = SubmittedApp; productType = "com.apple.product-type.application"; };
+    222222222222222222222222 /* AdminApp */ = {isa = PBXNativeTarget; buildConfigurationList = B22222222222222222222222 /* Admin Config List */; buildPhases = (FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */, ); name = AdminApp; productType = "com.apple.product-type.application"; };
+  };
+}
+"""
+
+
 def fixture_xml_pbx_objects() -> dict:
     return {
         "FILE_APP": {"isa": "PBXFileReference", "path": "App/AppView.swift"},
@@ -383,6 +405,29 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("storekit-external-purchase-language", resolved_ids)
             self.assertEqual(result.head_ref, "HEAD")
 
+    def test_diff_mode_marks_changed_file_finding_when_display_evidence_is_truncated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            for index in range(9):
+                write_text(root / f"OldPaywall{index}.swift", 'let copy = "Subscribe on the web"\n')
+            write_text(root / "Sources" / "NewPaywall.swift", 'let copy = "Welcome"\n')
+            commit_all(root, "base")
+            write_text(root / "Sources" / "NewPaywall.swift", 'let copy = "Subscribe on the web"\n')
+
+            result = scanner.diff_scan_result(root, base_ref="HEAD")
+            changed_ids = {finding.id for finding in result.changed_file_findings}
+            existing_finding = next(
+                finding
+                for finding in result.existing_findings
+                if finding.id == "storekit-external-purchase-language"
+            )
+
+            self.assertIn("Sources/NewPaywall.swift", result.changed_files)
+            self.assertFalse(scanner.finding_changed_evidence(existing_finding, ["Sources/NewPaywall.swift"]))
+            self.assertIn("storekit-external-purchase-language", changed_ids)
+
     def test_submitted_target_scopes_code_pattern_findings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -399,6 +444,81 @@ class ScannerTests(unittest.TestCase):
             self.assertNotIn("storekit-external-purchase-language", scoped_ids)
             self.assertEqual(scoped.scoped_target, "SubmittedApp")
             self.assertTrue(any(membership.target == "SubmittedApp" for membership in scoped.target_memberships))
+
+    def test_submitted_target_scopes_plist_and_privacy_manifest_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, fixture_pbxproj())
+            write_text(
+                root / "App" / "AppView.swift",
+                "import AVFoundation\nlet camera = AVCaptureDevice.default(for: .video)\n",
+            )
+            write_text(root / "Admin" / "AdminView.swift", "import SwiftUI\nlet title = \"Admin\"\n")
+            write_plist(root / "Admin" / "Info.plist", {"NSCameraUsageDescription": "Capture admin photos."})
+            write_plist(root / "Admin" / "PrivacyInfo.xcprivacy", {"NSPrivacyAccessedAPITypes": []})
+
+            unscoped = scanner.scan_result(root)
+            scoped = scanner.scan_result(root, submitted_target="SubmittedApp")
+            unscoped_ids = {finding.id for finding in unscoped.findings}
+            scoped_ids = {finding.id for finding in scoped.findings}
+
+            self.assertNotIn("permissions-missing-nscamerausagedescription", unscoped_ids)
+            self.assertNotIn("privacy-no-privacy-manifest", unscoped_ids)
+            self.assertIn("permissions-missing-nscamerausagedescription", scoped_ids)
+            self.assertIn("privacy-no-privacy-manifest", scoped_ids)
+
+    def test_submitted_target_keeps_adjacent_info_plist_when_build_setting_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, fixture_pbxproj())
+            write_text(
+                root / "App" / "AppView.swift",
+                "import AVFoundation\nlet camera = AVCaptureDevice.default(for: .video)\n",
+            )
+            write_text(root / "Admin" / "AdminView.swift", "import SwiftUI\nlet title = \"Admin\"\n")
+            write_plist(root / "App" / "Info.plist", {"NSCameraUsageDescription": "Capture profile photos."})
+            write_plist(root / "Admin" / "Info.plist", {"CFBundleName": "Admin"})
+
+            scoped = scanner.scan_result(root, submitted_target="SubmittedApp")
+            scoped_ids = {finding.id for finding in scoped.findings}
+
+            self.assertNotIn("permissions-missing-nscamerausagedescription", scoped_ids)
+
+    def test_static_target_matrix_uses_each_pbx_native_target_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, fixture_pbxproj_with_build_configs())
+            write_text(root / "App" / "AppView.swift", "import SwiftUI\n")
+            write_text(root / "Admin" / "AdminView.swift", "import AppKit\n")
+            write_plist(root / "App" / "Info.plist", {"CFBundleName": "Submitted"})
+            write_plist(root / "Admin" / "Info.plist", {"CFBundleName": "Admin"})
+
+            result = scanner.scan_result(root)
+            targets = {target.name: target for target in result.targets}
+
+            self.assertEqual(targets["SubmittedApp"].bundle_identifier, "com.example.app")
+            self.assertEqual(targets["SubmittedApp"].platforms, ["iOS"])
+            self.assertEqual(targets["AdminApp"].bundle_identifier, "com.example.admin")
+            self.assertEqual(targets["AdminApp"].platforms, ["macOS"])
+
+    def test_diff_mode_marks_scoped_info_plist_changes_as_changed_file_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_project(root, fixture_pbxproj())
+            write_text(
+                root / "App" / "AppView.swift",
+                "import AVFoundation\nlet camera = AVCaptureDevice.default(for: .video)\n",
+            )
+            write_plist(root / "App" / "Info.plist", {"CFBundleName": "Fixture"})
+            commit_all(root, "base")
+            write_plist(root / "App" / "Info.plist", {"CFBundleName": "Fixture", "CFBundleDisplayName": "Fixture"})
+
+            result = scanner.diff_scan_result(root, base_ref="HEAD", submitted_target="SubmittedApp")
+            changed_ids = {finding.id for finding in result.changed_file_findings}
+
+            self.assertIn("App/Info.plist", result.changed_files)
+            self.assertIn("permissions-missing-nscamerausagedescription", changed_ids)
 
     def test_xml_pbxproj_auto_scopes_sole_app_target(self):
         with tempfile.TemporaryDirectory() as tmp:
