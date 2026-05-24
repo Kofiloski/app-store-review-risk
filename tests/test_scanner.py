@@ -546,6 +546,23 @@ class ScannerTests(unittest.TestCase):
 
             self.assertNotIn("app-completeness-placeholder-content", finding_ids)
 
+    def test_repeated_scan_refreshes_changed_source_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            source = root / "Sources" / "Paywall.swift"
+            write_text(source, 'let copy = "Welcome"\n')
+
+            initial = scanner.scan_result(root)
+            write_text(source, 'let copy = "Subscribe on the web"\n')
+            rescanned = scanner.scan_result(root)
+
+            initial_ids = {finding.id for finding in initial.findings}
+            rescanned_ids = {finding.id for finding in rescanned.findings}
+
+            self.assertNotIn("storekit-external-purchase-language", initial_ids)
+            self.assertIn("storekit-external-purchase-language", rescanned_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

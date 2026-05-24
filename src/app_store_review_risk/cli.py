@@ -396,12 +396,12 @@ def slugify(value: str) -> str:
 
 def iter_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
+        dirnames[:] = sorted(
             dirname
             for dirname in dirnames
             if dirname not in SKIP_DIRS and not dirname.endswith((".noindex", ".xcresult"))
-        ]
-        for filename in filenames:
+        )
+        for filename in sorted(filenames):
             yield Path(dirpath) / filename
 
 
@@ -420,6 +420,10 @@ def read_text(path: Path) -> str:
     if path.stat().st_size > 2_000_000:
         return ""
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def clear_scan_caches() -> None:
+    read_text.cache_clear()
 
 
 def load_plist(path: Path) -> tuple[Any | None, str | None]:
@@ -1513,6 +1517,7 @@ def scan_result(
     scheme: str | None = None,
     submitted_target: str | None = None,
 ) -> ScanResult:
+    clear_scan_caches()
     files = list(iter_files(root))
     text_files = [path for path in files if path.suffix in TEXT_EXTENSIONS]
     all_plist_files = [path for path in files if path.suffix in PLIST_EXTENSIONS]
@@ -1933,6 +1938,7 @@ def scoped_changed_files(changed_files: list[str], result: ScanResult) -> list[s
 
 
 def changed_file_signal_finding_ids(root: Path, changed_files: list[str], result: ScanResult) -> set[str]:
+    clear_scan_caches()
     head_finding_ids = {finding.id for finding in result.findings}
     changed_paths = [
         root / changed_file
