@@ -7,8 +7,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +76,56 @@ def fixture_pbxproj() -> str:
 """
 
 
+def fixture_pbxproj_with_synchronized_groups() -> str:
+    return """
+// !$*UTF8*$!
+{
+  objects = {
+    CCCCCCCCCCCCCCCCCCCCCCCC /* Exceptions for "App" folder in "SubmittedApp" target */ = {
+      isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+      membershipExceptions = (
+        Excluded.swift,
+      );
+      target = 111111111111111111111111 /* SubmittedApp */;
+    };
+    AAAAAAAAAAAAAAAAAAAAAAAA /* App */ = {
+      isa = PBXFileSystemSynchronizedRootGroup;
+      exceptions = (
+        CCCCCCCCCCCCCCCCCCCCCCCC /* Exceptions for "App" folder in "SubmittedApp" target */,
+      );
+      explicitFileTypes = {};
+      explicitFolders = ();
+      path = App;
+      sourceTree = "<group>";
+    };
+    BBBBBBBBBBBBBBBBBBBBBBBB /* Admin */ = {
+      isa = PBXFileSystemSynchronizedRootGroup;
+      explicitFileTypes = {};
+      explicitFolders = ();
+      path = Admin;
+      sourceTree = "<group>";
+    };
+    DDDDDDDDDDDDDDDDDDDDDDDD /* Sources */ = {isa = PBXSourcesBuildPhase; files = (); };
+    EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */ = {isa = PBXSourcesBuildPhase; files = (); };
+    111111111111111111111111 /* SubmittedApp */ = {
+      isa = PBXNativeTarget;
+      buildPhases = (DDDDDDDDDDDDDDDDDDDDDDDD /* Sources */, );
+      fileSystemSynchronizedGroups = (AAAAAAAAAAAAAAAAAAAAAAAA /* App */, );
+      name = SubmittedApp;
+      productType = "com.apple.product-type.application";
+    };
+    222222222222222222222222 /* AdminApp */ = {
+      isa = PBXNativeTarget;
+      buildPhases = (EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */, );
+      fileSystemSynchronizedGroups = (BBBBBBBBBBBBBBBBBBBBBBBB /* Admin */, );
+      name = AdminApp;
+      productType = "com.apple.product-type.application";
+    };
+  };
+}
+"""
+
+
 def fixture_pbxproj_with_build_configs() -> str:
     return """
 // !$*UTF8*$!
@@ -94,6 +145,38 @@ def fixture_pbxproj_with_build_configs() -> str:
     222222222222222222222222 /* AdminApp */ = {isa = PBXNativeTarget; buildConfigurationList = B22222222222222222222222 /* Admin Config List */; buildPhases = (FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */, ); name = AdminApp; productType = "com.apple.product-type.application"; };
   };
 }
+"""
+
+
+def fixture_pbxproj_with_generated_info_plist_settings(
+    *,
+    app_settings: str = "",
+    admin_settings: str = "",
+    app_release_settings: str | None = None,
+    admin_release_settings: str | None = None,
+) -> str:
+    app_release_settings = app_settings if app_release_settings is None else app_release_settings
+    admin_release_settings = admin_settings if admin_release_settings is None else admin_release_settings
+    return f"""
+// !$*UTF8*$!
+{{
+  objects = {{
+    AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */ = {{isa = PBXFileReference; path = App/AppView.swift; sourceTree = "<group>"; }};
+    BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */ = {{isa = PBXFileReference; path = Admin/AdminView.swift; sourceTree = "<group>"; }};
+    CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */ = {{isa = PBXBuildFile; fileRef = AAAAAAAAAAAAAAAAAAAAAAAA /* AppView.swift */; }};
+    DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */ = {{isa = PBXBuildFile; fileRef = BBBBBBBBBBBBBBBBBBBBBBBB /* AdminView.swift */; }};
+    EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */ = {{isa = PBXSourcesBuildPhase; files = (CCCCCCCCCCCCCCCCCCCCCCCC /* AppView.swift in Sources */, ); }};
+    FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */ = {{isa = PBXSourcesBuildPhase; files = (DDDDDDDDDDDDDDDDDDDDDDDD /* AdminView.swift in Sources */, ); }};
+    A11111111111111111111111 /* App Debug */ = {{isa = XCBuildConfiguration; buildSettings = {{ GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.app; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1; {app_settings} }}; name = Debug; }};
+    A33333333333333333333333 /* App Release */ = {{isa = XCBuildConfiguration; buildSettings = {{ GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.app; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1; {app_release_settings} }}; name = Release; }};
+    A22222222222222222222222 /* App Config List */ = {{isa = XCConfigurationList; buildConfigurations = (A11111111111111111111111 /* App Debug */, A33333333333333333333333 /* App Release */, ); }};
+    B11111111111111111111111 /* Admin Debug */ = {{isa = XCBuildConfiguration; buildSettings = {{ GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.admin; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1; {admin_settings} }}; name = Debug; }};
+    B33333333333333333333333 /* Admin Release */ = {{isa = XCBuildConfiguration; buildSettings = {{ GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.example.admin; PRODUCT_TYPE = "com.apple.product-type.application"; SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1; {admin_release_settings} }}; name = Release; }};
+    B22222222222222222222222 /* Admin Config List */ = {{isa = XCConfigurationList; buildConfigurations = (B11111111111111111111111 /* Admin Debug */, B33333333333333333333333 /* Admin Release */, ); }};
+    111111111111111111111111 /* SubmittedApp */ = {{isa = PBXNativeTarget; buildConfigurationList = A22222222222222222222222 /* App Config List */; buildPhases = (EEEEEEEEEEEEEEEEEEEEEEEE /* Sources */, ); name = SubmittedApp; productType = "com.apple.product-type.application"; }};
+    222222222222222222222222 /* AdminApp */ = {{isa = PBXNativeTarget; buildConfigurationList = B22222222222222222222222 /* Admin Config List */; buildPhases = (FFFFFFFFFFFFFFFFFFFFFFFF /* Sources */, ); name = AdminApp; productType = "com.apple.product-type.application"; }};
+  }};
+}}
 """
 
 
@@ -142,6 +225,47 @@ def fixture_xml_pbx_objects() -> dict:
     }
 
 
+def fixture_xml_pbx_objects_with_synchronized_groups() -> dict:
+    return {
+        "EXCEPTION_APP": {
+            "isa": "PBXFileSystemSynchronizedBuildFileExceptionSet",
+            "membershipExceptions": ["Excluded.swift"],
+            "target": "TARGET_APP",
+        },
+        "GROUP_APP": {
+            "isa": "PBXFileSystemSynchronizedRootGroup",
+            "exceptions": ["EXCEPTION_APP"],
+            "explicitFileTypes": {},
+            "explicitFolders": [],
+            "path": "App",
+            "sourceTree": "<group>",
+        },
+        "GROUP_ADMIN": {
+            "isa": "PBXFileSystemSynchronizedRootGroup",
+            "explicitFileTypes": {},
+            "explicitFolders": [],
+            "path": "Admin",
+            "sourceTree": "<group>",
+        },
+        "PHASE_APP": {"isa": "PBXSourcesBuildPhase", "files": []},
+        "PHASE_ADMIN": {"isa": "PBXSourcesBuildPhase", "files": []},
+        "TARGET_APP": {
+            "isa": "PBXNativeTarget",
+            "name": "XmlApp",
+            "productType": "com.apple.product-type.application",
+            "buildPhases": ["PHASE_APP"],
+            "fileSystemSynchronizedGroups": ["GROUP_APP"],
+        },
+        "TARGET_ADMIN": {
+            "isa": "PBXNativeTarget",
+            "name": "XmlAdmin",
+            "productType": "com.apple.product-type.application",
+            "buildPhases": ["PHASE_ADMIN"],
+            "fileSystemSynchronizedGroups": ["GROUP_ADMIN"],
+        },
+    }
+
+
 class ScannerTests(unittest.TestCase):
     def test_parse_xcodebuild_list_and_build_settings_json(self):
         schemes, targets = scanner.parse_xcodebuild_list_json(
@@ -181,6 +305,30 @@ class ScannerTests(unittest.TestCase):
         )
         self.assertEqual(test_target.submission_path, "Not submitted app target")
 
+    def test_xcodebuild_show_settings_timeout_falls_back_to_static_discovery(self):
+        list_result = subprocess.CompletedProcess(
+            args=["xcodebuild"],
+            returncode=0,
+            stdout='{"project":{"schemes":["Fixture"],"targets":["Fixture"]}}',
+            stderr="",
+        )
+        notes: list[str] = []
+        mocked_run = Mock(side_effect=[list_result, subprocess.TimeoutExpired(["xcodebuild"], 60)])
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            scanner.discover_xcodebuild_targets.__globals__,
+            {"run_xcodebuild": mocked_run},
+        ):
+            targets = scanner.discover_xcodebuild_targets(
+                Path(tmp),
+                project="Fixture.xcodeproj",
+                workspace=None,
+                scheme=None,
+                notes=notes,
+            )
+
+        self.assertEqual(targets, [])
+        self.assertTrue(any("showBuildSettings failed" in note and "Fixture" in note for note in notes))
+
     def test_detects_ios_ipados_fixture_and_missing_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -219,6 +367,10 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("permissions-missing-nslocationwheninuseusagedescription", finding_ids)
             self.assertIn("tracking-missing-nsusertrackingusagedescription", finding_ids)
             self.assertIn("privacy-no-privacy-manifest", finding_ids)
+            self.assertEqual(
+                next(finding.severity for finding in result.findings if finding.id == "privacy-no-privacy-manifest"),
+                "LOW",
+            )
             self.assertTrue(any(check.name == "App Store metadata and screenshots" for check in result.artifact_checks))
 
     def test_skips_placeholder_info_plist_target_when_project_target_exists(self):
@@ -307,10 +459,40 @@ class ScannerTests(unittest.TestCase):
             result = scanner.scan_result(root)
             finding_ids = {finding.id for finding in result.findings}
             artifact_names = {check.name for check in result.artifact_checks}
+            external_purchase = next(
+                finding for finding in result.findings if finding.id == "storekit-external-purchase-language"
+            )
 
             self.assertIn("storekit-external-purchase-language", finding_ids)
             self.assertIn("storekit-missing-restore-path", finding_ids)
+            self.assertEqual(external_purchase.severity, "MEDIUM")
+            self.assertIn("United States storefront", external_purchase.recommendation)
             self.assertIn("In-app purchase/subscription product configuration", artifact_names)
+
+    def test_authentication_and_account_findings_use_current_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_text(
+                root / "Login.swift",
+                "import GoogleSignIn\nlet action = \"Create account\"\n",
+            )
+
+            result = scanner.scan_result(root)
+            by_id = {finding.id: finding for finding in result.findings}
+
+            login = by_id["authentication-third-party-login-without-apple"]
+            deletion = by_id["accounts-missing-account-deletion-flow"]
+            self.assertIn("equivalent privacy-preserving option", login.title)
+            self.assertIn("Guideline 4.8", login.recommendation)
+            self.assertIn("in-app account deletion initiation", deletion.title)
+
+            write_text(
+                root / "Login.swift",
+                "import LoginWithAmazon\nlet action = \"Create account\"\nfunc deleteAccount() {}\n",
+            )
+            updated_ids = {finding.id for finding in scanner.scan_result(root).findings}
+            self.assertIn("authentication-third-party-login-without-apple", updated_ids)
+            self.assertNotIn("accounts-missing-account-deletion-flow", updated_ids)
 
     def test_privacy_manifest_required_reason_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,6 +526,86 @@ class ScannerTests(unittest.TestCase):
 
             self.assertNotIn("storekit-external-purchase-language", finding_ids)
             self.assertEqual(result.suppressions_applied[0].finding_id, "storekit-external-purchase-language")
+
+    def test_suppression_requires_a_concrete_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_text(
+                root / ".appstore-review-risk.yml",
+                "suppressions:\n  - id: storekit-external-purchase-language\n",
+            )
+
+            with self.assertRaisesRegex(ValueError, "needs a concrete review-oriented reason"):
+                scanner.scan_result(root)
+
+    def test_invalid_json_suppression_returns_clean_cli_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_text(root / ".appstore-review-risk.json", "{not json")
+            stderr = io.StringIO()
+
+            with redirect_stderr(stderr):
+                exit_code = scanner.main([str(root)])
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("Invalid suppression config", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_malformed_yaml_suppression_is_rejected(self):
+        malformed_documents = (
+            "suppressions: invalid\n",
+            (
+                "suppressions:\n"
+                "  - id: storekit-external-purchase-language\n"
+                "    unexpected: true\n"
+                "    reason: Internal-only copy.\n"
+            ),
+            (
+                "suppressions:\n"
+                "  - id: storekit-external-purchase-language\n"
+                '    reason: ""\n'
+            ),
+            (
+                "suppressions:\n"
+                "  - id: storekit-external-purchase-language\n"
+                '    reason: "unterminated\n'
+            ),
+            (
+                "suppressions:\n"
+                "  - id: storekit-external-purchase-language\n"
+                "    reason: 'Internal' only'\n"
+            ),
+        )
+        for document in malformed_documents:
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_text(root / ".appstore-review-risk.yml", document)
+
+                with self.assertRaisesRegex(ValueError, "Invalid suppression config"):
+                    scanner.scan_result(root)
+
+    def test_symlinked_suppression_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_root = Path(tmp)
+            root = temp_root / "repo"
+            root.mkdir()
+            outside = temp_root / "outside.yml"
+            write_text(
+                outside,
+                (
+                    "suppressions:\n"
+                    "  - id: storekit-external-purchase-language\n"
+                    "    reason: External control data must not be followed.\n"
+                ),
+            )
+            suppression = root / ".appstore-review-risk.yml"
+            try:
+                suppression.symlink_to(outside)
+            except OSError as error:
+                self.skipTest(f"Symlinks unavailable: {error}")
+
+            with self.assertRaisesRegex(ValueError, "symbolic links are not supported"):
+                scanner.scan_result(root)
 
     def test_compact_output_limits_detail(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -386,6 +648,41 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("Apple App Review Diff Risk Scan Summary", rendered)
             self.assertIn("storekit-external-purchase-language", rendered)
 
+    def test_diff_mode_treats_untracked_files_as_working_tree_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            write_text(root / "Existing.swift", 'let copy = "Subscribe on the web"\n')
+            commit_all(root, "base")
+            write_text(root / "Untracked.swift", 'let copy = "Subscribe on the web"\n')
+
+            result = scanner.diff_scan_result(root, base_ref="HEAD")
+            changed_ids = {finding.id for finding in result.changed_file_findings}
+
+            self.assertIn("Untracked.swift", result.changed_files)
+            self.assertIn("storekit-external-purchase-language", changed_ids)
+
+    def test_diff_mode_does_not_resolve_untracked_symlinks_to_changed_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            write_text(root / "Existing.swift", 'let copy = "Subscribe on the web"\n')
+            commit_all(root, "base")
+            link = root / "Alias.swift"
+            try:
+                link.symlink_to("Existing.swift")
+            except OSError as error:
+                self.skipTest(f"Symlinks unavailable: {error}")
+
+            result = scanner.diff_scan_result(root, base_ref="HEAD")
+
+            self.assertEqual(result.changed_files, [])
+            self.assertNotIn(
+                "storekit-external-purchase-language",
+                {finding.id for finding in result.changed_file_findings},
+            )
+
     def test_diff_mode_reports_resolved_ref_findings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -404,6 +701,68 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("Sources/Paywall.swift", result.changed_files)
             self.assertIn("storekit-external-purchase-language", resolved_ids)
             self.assertEqual(result.head_ref, "HEAD")
+
+    def test_committed_ref_diff_does_not_consult_checkout_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, ["init"])
+            source = root / "Paywall.swift"
+            write_text(source, 'let copy = "Welcome"\n')
+            commit_all(root, "base")
+            base_ref = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            write_text(source, 'let copy = "Subscribe on the web"\n')
+            commit_all(root, "head")
+            head_ref = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            write_text(root / "Other.swift", 'let copy = "Welcome"\n')
+            source.unlink()
+            try:
+                source.symlink_to("Other.swift")
+            except OSError as error:
+                self.skipTest(f"Symlinks unavailable: {error}")
+
+            result = scanner.diff_scan_result(
+                root,
+                base_ref=base_ref,
+                head_ref=head_ref,
+            )
+
+            self.assertIn("Paywall.swift", result.changed_files)
+            self.assertIn(
+                "storekit-external-purchase-language",
+                {finding.id for finding in result.new_findings},
+            )
+
+    def test_git_archive_extraction_skips_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_root = Path(tmp)
+            root = temp_root / "repo"
+            root.mkdir()
+            run_git(root, ["init"])
+            link = root / "Leaked.swift"
+            try:
+                link.symlink_to("../Outside.swift")
+            except OSError as error:
+                self.skipTest(f"Symlinks unavailable: {error}")
+            commit_all(root, "base")
+            destination = temp_root / "archive"
+            destination.mkdir()
+
+            scanner.extract_git_archive(root, "HEAD", destination)
+
+            self.assertFalse((destination / "Leaked.swift").is_symlink())
+            self.assertFalse((destination / "Leaked.swift").exists())
 
     def test_diff_mode_marks_changed_file_finding_when_display_evidence_is_truncated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -445,6 +804,40 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(scoped.scoped_target, "SubmittedApp")
             self.assertTrue(any(membership.target == "SubmittedApp" for membership in scoped.target_memberships))
 
+    def test_openstep_synchronized_groups_scope_only_the_submitted_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, fixture_pbxproj_with_synchronized_groups())
+            write_text(root / "App" / "AppView.swift", "import SwiftUI\nlet title = \"Home\"\n")
+            write_text(root / "App" / "Excluded.swift", 'let copy = "Subscribe on the web"\n')
+            write_text(root / "Admin" / "AdminView.swift", 'let copy = "Subscribe on the web"\n')
+
+            app_result = scanner.scan_result(root, submitted_target="SubmittedApp")
+            admin_result = scanner.scan_result(root, submitted_target="AdminApp")
+            app_membership = next(item for item in app_result.target_memberships if item.target == "SubmittedApp")
+
+            self.assertEqual(app_result.scoped_target, "SubmittedApp")
+            self.assertEqual(app_membership.files, ["App/AppView.swift"])
+            self.assertNotIn("storekit-external-purchase-language", {finding.id for finding in app_result.findings})
+            self.assertIn("storekit-external-purchase-language", {finding.id for finding in admin_result.findings})
+
+    def test_xml_synchronized_groups_scope_only_the_submitted_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_xml_project(root, fixture_xml_pbx_objects_with_synchronized_groups())
+            write_text(root / "App" / "AppView.swift", "import SwiftUI\nlet title = \"Home\"\n")
+            write_text(root / "App" / "Excluded.swift", 'let copy = "Subscribe on the web"\n')
+            write_text(root / "Admin" / "AdminView.swift", 'let copy = "Subscribe on the web"\n')
+
+            app_result = scanner.scan_result(root, submitted_target="XmlApp")
+            admin_result = scanner.scan_result(root, submitted_target="XmlAdmin")
+            app_membership = next(item for item in app_result.target_memberships if item.target == "XmlApp")
+
+            self.assertEqual(app_result.scoped_target, "XmlApp")
+            self.assertEqual(app_membership.files, ["App/AppView.swift"])
+            self.assertNotIn("storekit-external-purchase-language", {finding.id for finding in app_result.findings})
+            self.assertIn("storekit-external-purchase-language", {finding.id for finding in admin_result.findings})
+
     def test_submitted_target_scopes_plist_and_privacy_manifest_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -483,6 +876,296 @@ class ScannerTests(unittest.TestCase):
             scoped_ids = {finding.id for finding in scoped.findings}
 
             self.assertNotIn("permissions-missing-nscamerausagedescription", scoped_ids)
+
+    def test_openstep_generated_info_plist_usage_keys_are_target_scoped(self):
+        generated_settings = " ".join(
+            [
+                'INFOPLIST_KEY_NSCameraUsageDescription = "Capture profile photos.";',
+                'INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Add events to your calendar.";',
+                'INFOPLIST_KEY_NSUserTrackingUsageDescription = "Measure advertising performance.";',
+            ]
+        )
+        expected_missing_ids = {
+            "permissions-missing-nscamerausagedescription",
+            "permissions-missing-"
+            + scanner.slugify(
+                "NSCalendarsUsageDescription or "
+                "NSCalendarsFullAccessUsageDescription or "
+                "NSCalendarsWriteOnlyAccessUsageDescription"
+            ),
+            "tracking-missing-nsusertrackingusagedescription",
+        }
+
+        for setting_owner in ("SubmittedApp", "AdminApp"):
+            with self.subTest(setting_owner=setting_owner), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_project(
+                    root,
+                    fixture_pbxproj_with_generated_info_plist_settings(
+                        app_settings=generated_settings if setting_owner == "SubmittedApp" else "",
+                        admin_settings=generated_settings if setting_owner == "AdminApp" else "",
+                    ),
+                )
+                write_text(
+                    root / "App" / "AppView.swift",
+                    """
+                    import AppTrackingTransparency
+                    import AVFoundation
+                    import EventKit
+
+                    let camera = AVCaptureDevice.default(for: .video)
+                    let eventStore = EKEventStore()
+                    ATTrackingManager.requestTrackingAuthorization { _ in }
+                    """,
+                )
+                write_text(root / "Admin" / "AdminView.swift", "import SwiftUI\n")
+
+                result = scanner.scan_result(root, submitted_target="SubmittedApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if setting_owner == "SubmittedApp":
+                    self.assertTrue(expected_missing_ids.isdisjoint(finding_ids))
+                else:
+                    self.assertTrue(expected_missing_ids <= finding_ids)
+
+    def test_openstep_generated_info_plist_keys_must_exist_in_every_configuration(self):
+        generated_settings = " ".join(
+            [
+                'INFOPLIST_KEY_NSCameraUsageDescription = "Capture profile photos.";',
+                'INFOPLIST_KEY_NSUserTrackingUsageDescription = "Measure advertising performance.";',
+            ]
+        )
+        expected_missing_ids = {
+            "permissions-missing-nscamerausagedescription",
+            "tracking-missing-nsusertrackingusagedescription",
+        }
+
+        release_settings_by_case = {
+            "missing": "",
+            "empty": (
+                'INFOPLIST_KEY_NSCameraUsageDescription = ""; '
+                'INFOPLIST_KEY_NSUserTrackingUsageDescription = "";'
+            ),
+            "valid": generated_settings,
+        }
+        for release_case, release_settings in release_settings_by_case.items():
+            with self.subTest(release_case=release_case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_project(
+                    root,
+                    fixture_pbxproj_with_generated_info_plist_settings(
+                        app_settings=generated_settings,
+                        app_release_settings=release_settings,
+                    ),
+                )
+                write_text(
+                    root / "App" / "AppView.swift",
+                    """
+                    import AppTrackingTransparency
+                    import AVFoundation
+
+                    let camera = AVCaptureDevice.default(for: .video)
+                    ATTrackingManager.requestTrackingAuthorization { _ in }
+                    """,
+                )
+                write_text(root / "Admin" / "AdminView.swift", "import SwiftUI\n")
+
+                result = scanner.scan_result(root, submitted_target="SubmittedApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if release_case == "valid":
+                    self.assertTrue(expected_missing_ids.isdisjoint(finding_ids))
+                else:
+                    self.assertTrue(expected_missing_ids <= finding_ids)
+
+    def test_openstep_generated_info_plist_values_resolve_build_setting_references(self):
+        cases = {
+            "undefined": (
+                "INFOPLIST_KEY_NSCameraUsageDescription = "
+                "$(CAMERA_PERMISSION_DESCRIPTION);"
+            ),
+            "defined": (
+                'CAMERA_PERMISSION_DESCRIPTION = "Capture profile photos."; '
+                "INFOPLIST_KEY_NSCameraUsageDescription = "
+                "$(CAMERA_PERMISSION_DESCRIPTION);"
+            ),
+        }
+        for case, settings in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_project(
+                    root,
+                    fixture_pbxproj_with_generated_info_plist_settings(
+                        app_settings=settings,
+                    ),
+                )
+                write_text(
+                    root / "App" / "AppView.swift",
+                    "import AVFoundation\nlet camera = AVCaptureDevice.default(for: .video)\n",
+                )
+                write_text(root / "Admin" / "AdminView.swift", "import SwiftUI\n")
+
+                result = scanner.scan_result(root, submitted_target="SubmittedApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if case == "defined":
+                    self.assertNotIn("permissions-missing-nscamerausagedescription", finding_ids)
+                else:
+                    self.assertIn("permissions-missing-nscamerausagedescription", finding_ids)
+
+    def test_xml_generated_info_plist_usage_keys_are_target_scoped(self):
+        generated_settings = {
+            "INFOPLIST_KEY_NSCameraUsageDescription": "Capture profile photos.",
+            "INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription": "Add events to your calendar.",
+            "INFOPLIST_KEY_NSUserTrackingUsageDescription": "Measure advertising performance.",
+        }
+        expected_missing_ids = {
+            "permissions-missing-nscamerausagedescription",
+            "permissions-missing-"
+            + scanner.slugify(
+                "NSCalendarsUsageDescription or "
+                "NSCalendarsFullAccessUsageDescription or "
+                "NSCalendarsWriteOnlyAccessUsageDescription"
+            ),
+            "tracking-missing-nsusertrackingusagedescription",
+        }
+
+        for setting_owner in ("XmlApp", "XmlAppTests"):
+            with self.subTest(setting_owner=setting_owner), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                objects = fixture_xml_pbx_objects()
+                config_id = "CONFIG_APP" if setting_owner == "XmlApp" else "CONFIG_TEST"
+                objects[config_id]["buildSettings"].update(generated_settings)
+                write_xml_project(root, objects)
+                write_text(
+                    root / "App" / "AppView.swift",
+                    """
+                    import AppTrackingTransparency
+                    import AVFoundation
+                    import EventKit
+
+                    let camera = AVCaptureDevice.default(for: .video)
+                    let eventStore = EKEventStore()
+                    ATTrackingManager.requestTrackingAuthorization { _ in }
+                    """,
+                )
+                write_text(root / "Tests" / "AppTests.swift", "import XCTest\n")
+
+                result = scanner.scan_result(root, submitted_target="XmlApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if setting_owner == "XmlApp":
+                    self.assertTrue(expected_missing_ids.isdisjoint(finding_ids))
+                else:
+                    self.assertTrue(expected_missing_ids <= finding_ids)
+
+    def test_xml_generated_info_plist_keys_must_exist_in_every_configuration(self):
+        generated_settings = {
+            "INFOPLIST_KEY_NSCameraUsageDescription": "Capture profile photos.",
+            "INFOPLIST_KEY_NSUserTrackingUsageDescription": "Measure advertising performance.",
+        }
+        expected_missing_ids = {
+            "permissions-missing-nscamerausagedescription",
+            "tracking-missing-nsusertrackingusagedescription",
+        }
+
+        for release_case in ("missing", "empty", "valid"):
+            with self.subTest(release_case=release_case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                objects = fixture_xml_pbx_objects()
+                objects["CONFIG_APP"]["name"] = "Debug"
+                objects["CONFIG_APP"]["buildSettings"].update(generated_settings)
+                release_settings = dict(objects["CONFIG_APP"]["buildSettings"])
+                if release_case == "missing":
+                    for key in generated_settings:
+                        release_settings.pop(key)
+                elif release_case == "empty":
+                    for key in generated_settings:
+                        release_settings[key] = ""
+                objects["CONFIG_APP_RELEASE"] = {
+                    "isa": "XCBuildConfiguration",
+                    "name": "Release",
+                    "buildSettings": release_settings,
+                }
+                objects["CONFIG_LIST_APP"]["buildConfigurations"].append("CONFIG_APP_RELEASE")
+                write_xml_project(root, objects)
+                write_text(
+                    root / "App" / "AppView.swift",
+                    """
+                    import AppTrackingTransparency
+                    import AVFoundation
+
+                    let camera = AVCaptureDevice.default(for: .video)
+                    ATTrackingManager.requestTrackingAuthorization { _ in }
+                    """,
+                )
+                write_text(root / "Tests" / "AppTests.swift", "import XCTest\n")
+
+                result = scanner.scan_result(root, submitted_target="XmlApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if release_case == "valid":
+                    self.assertTrue(expected_missing_ids.isdisjoint(finding_ids))
+                else:
+                    self.assertTrue(expected_missing_ids <= finding_ids)
+
+    def test_xml_generated_info_plist_values_resolve_build_setting_references(self):
+        for case in ("undefined", "defined"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                objects = fixture_xml_pbx_objects()
+                settings = objects["CONFIG_APP"]["buildSettings"]
+                settings["INFOPLIST_KEY_NSCameraUsageDescription"] = (
+                    "$(CAMERA_PERMISSION_DESCRIPTION)"
+                )
+                if case == "defined":
+                    settings["CAMERA_PERMISSION_DESCRIPTION"] = "Capture profile photos."
+                write_xml_project(root, objects)
+                write_text(
+                    root / "App" / "AppView.swift",
+                    "import AVFoundation\nlet camera = AVCaptureDevice.default(for: .video)\n",
+                )
+                write_text(root / "Tests" / "AppTests.swift", "import XCTest\n")
+
+                result = scanner.scan_result(root, submitted_target="XmlApp")
+                finding_ids = {finding.id for finding in result.findings}
+
+                if case == "defined":
+                    self.assertNotIn("permissions-missing-nscamerausagedescription", finding_ids)
+                else:
+                    self.assertIn("permissions-missing-nscamerausagedescription", finding_ids)
+
+    def test_system_photo_pickers_do_not_imply_direct_photo_library_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root, "SDKROOT = iphoneos; TARGETED_DEVICE_FAMILY = 1;")
+            source = root / "Sources" / "PhotoPicker.swift"
+            write_text(
+                source,
+                """
+                import PhotosUI
+
+                PhotosPicker(selection: $selection, matching: .images)
+                let configuration = PHPickerConfiguration(photoLibrary: .shared())
+                let controller = PHPickerViewController(configuration: configuration)
+                """,
+            )
+
+            picker_result = scanner.scan_result(root)
+            picker_ids = {finding.id for finding in picker_result.findings}
+            self.assertNotIn("permissions-missing-nsphotolibraryusagedescription", picker_ids)
+
+            write_text(
+                source,
+                """
+                import Photos
+
+                PHPhotoLibrary.requestAuthorization { _ in }
+                """,
+            )
+            direct_result = scanner.scan_result(root)
+            direct_ids = {finding.id for finding in direct_result.findings}
+            self.assertIn("permissions-missing-nsphotolibraryusagedescription", direct_ids)
 
     def test_static_target_matrix_uses_each_pbx_native_target_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -562,6 +1245,27 @@ class ScannerTests(unittest.TestCase):
 
             self.assertNotIn("storekit-external-purchase-language", initial_ids)
             self.assertIn("storekit-external-purchase-language", rescanned_ids)
+
+    def test_broken_symlink_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            link = root / "Broken.swift"
+            try:
+                link.symlink_to(root / "Missing.swift")
+            except OSError as error:
+                self.skipTest(f"Symlinks unavailable: {error}")
+
+            self.assertEqual(list(scanner.iter_files(root)), [])
+            self.assertEqual(scanner.scan_result(root).findings, [])
+
+    def test_unreadable_text_file_is_reported_as_a_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_text(root / "App.swift", "import SwiftUI\n")
+            with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+                result = scanner.scan_result(root)
+
+            self.assertTrue(any("Skipped unreadable file `App.swift`" in note for note in result.notes))
 
 
 if __name__ == "__main__":

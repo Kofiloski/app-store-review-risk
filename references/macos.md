@@ -13,7 +13,7 @@ Use after the target matrix identifies a macOS, Mac Catalyst, helper-tool, or no
 - Sandbox entitlements must match visible app behavior; file, downloads, user-selected file, Apple Events, network, camera, microphone, and automation access need clear justification.
 - Hardened runtime, notarization, helper tools, login items, privileged helpers, daemons, and auto-updaters need current signing and review/notarization evidence.
 - Mac Catalyst apps need native-feeling menu, window, keyboard, pointer, and document behavior where relevant.
-- External purchase/account links and subscriptions still require StoreKit or approved entitlement paths when digital goods are involved.
+- External purchase/account links and subscriptions need storefront-specific review when digital goods are involved. Verify the current App Review Guidelines and StoreKit guidance rather than assuming a single entitlement rule across storefronts.
 - Apps that access files broadly need user intent through open/save panels, bookmarks, or documented entitlement use.
 - Private APIs, method swizzling of system behavior, hidden automation, or bypassing system privacy controls are high risk.
 

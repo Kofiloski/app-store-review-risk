@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -122,7 +123,12 @@ TARGET_FILE_BUILD_SETTINGS = {
 PERMISSION_CLUES: dict[str, list[str]] = {
     "NSCameraUsageDescription": [r"\bAVCaptureDevice\b", r"\bUIImagePickerController\b.*camera", r"\.camera\b"],
     "NSMicrophoneUsageDescription": [r"\bAVAudioRecorder\b", r"\brequestRecordPermission\b", r"\bAVCaptureDevice\b.*audio"],
-    "NSPhotoLibraryUsageDescription": [r"\bPHPhotoLibrary\b", r"\bPhotosPicker\b", r"\bPHPickerViewController\b", r"photoLibrary"],
+    "NSPhotoLibraryUsageDescription": [
+        r"\bPHPhotoLibrary\b",
+        r"\bPH(?:Asset|AssetCollection|ImageManager|CachingImageManager|AssetResourceManager)\b",
+        r"\bUIImagePickerController\b.*\bphotoLibrary\b",
+        r"\bsourceType\s*=\s*(?:UIImagePickerController\.SourceType\.)?\.?photoLibrary\b",
+    ],
     "NSPhotoLibraryAddUsageDescription": [r"\bPHPhotoLibrary\b.*performChanges", r"\bsaveToPhoto", r"\bUIImageWriteToSavedPhotosAlbum\b"],
     "NSLocationWhenInUseUsageDescription": [r"\bCLLocationManager\b", r"\bCoreLocation\b", r"\brequestWhenInUseAuthorization\b"],
     "NSLocationAlwaysAndWhenInUseUsageDescription": [r"\brequestAlwaysAuthorization\b", r"\ballowsBackgroundLocationUpdates\b"],
@@ -215,8 +221,15 @@ SOCIAL_LOGIN_PATTERNS = [
     r"\bGIDSignIn\b",
     r"\bFBSDKLoginKit\b",
     r"\bFacebookLogin\b",
+    r"\bTwitterKit\b",
+    r"\bTWTRTwitter\b",
+    r"\bLoginWithAmazon\b",
+    r"\bAIMobileLib\b",
+    r"\bWechatOpenSDK\b",
+    r"\bWXApi\b",
     r"\bsign in with google\b",
     r"\bsign in with facebook\b",
+    r"\b(?:sign|log) in with (?:x|twitter|linkedin|amazon|wechat)\b",
 ]
 
 APPLE_SIGN_IN_PATTERNS = [
@@ -242,6 +255,10 @@ DELETE_ACCOUNT_PATTERNS = [
     r"\bdelete my account\b",
     r"\baccount deletion\b",
     r"\bclose account\b",
+    r"\bdeleteAccount\b",
+    r"\bdeleteUser\b",
+    r"\bremoveAccount\b",
+    r"\bcloseAccount\b",
 ]
 
 UGC_PATTERNS = [
@@ -304,6 +321,8 @@ VAGUE_USAGE_WORDS = {
     "this app needs access",
     "we need access",
 }
+
+READ_TEXT_ERRORS: dict[Path, str] = {}
 
 
 @dataclass
@@ -399,10 +418,16 @@ def iter_files(root: Path) -> Iterable[Path]:
         dirnames[:] = sorted(
             dirname
             for dirname in dirnames
-            if dirname not in SKIP_DIRS and not dirname.endswith((".noindex", ".xcresult"))
+            if (
+                dirname not in SKIP_DIRS
+                and not dirname.endswith((".noindex", ".xcresult"))
+                and not (Path(dirpath) / dirname).is_symlink()
+            )
         )
         for filename in sorted(filenames):
-            yield Path(dirpath) / filename
+            path = Path(dirpath) / filename
+            if not path.is_symlink():
+                yield path
 
 
 def rel(path: Path, root: Path) -> str:
@@ -417,13 +442,29 @@ def rel(path: Path, root: Path) -> str:
 
 @lru_cache(maxsize=8192)
 def read_text(path: Path) -> str:
-    if path.stat().st_size > 2_000_000:
+    try:
+        if path.stat().st_size > 2_000_000:
+            return ""
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as error:
+        READ_TEXT_ERRORS[path] = str(error)
         return ""
-    return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def clear_scan_caches() -> None:
     read_text.cache_clear()
+    READ_TEXT_ERRORS.clear()
+
+
+def unreadable_file_notes(root: Path, max_notes: int = 5) -> list[str]:
+    items = sorted(READ_TEXT_ERRORS.items(), key=lambda item: rel(item[0], root))
+    notes = [
+        f"Skipped unreadable file `{rel(path, root)}`: {error}"
+        for path, error in items[:max_notes]
+    ]
+    if len(items) > max_notes:
+        notes.append(f"Skipped {len(items) - max_notes} additional unreadable file(s).")
+    return notes
 
 
 def load_plist(path: Path) -> tuple[Any | None, str | None]:
@@ -676,7 +717,11 @@ def discover_xcodebuild_targets(
     targets: list[TargetSummary] = []
     for selected_scheme in selected_schemes:
         show_args = [*container_args, "-scheme", selected_scheme, "-showBuildSettings", "-json"]
-        show_result = run_xcodebuild(show_args, root)
+        try:
+            show_result = run_xcodebuild(show_args, root)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            notes.append(f"xcodebuild -showBuildSettings failed for scheme `{selected_scheme}`: {error}")
+            continue
         parsed: list[TargetSummary] = []
         if show_result.returncode == 0:
             try:
@@ -684,7 +729,11 @@ def discover_xcodebuild_targets(
             except Exception:
                 parsed = []
         if not parsed:
-            fallback = run_xcodebuild([*container_args, "-scheme", selected_scheme, "-showBuildSettings"], root)
+            try:
+                fallback = run_xcodebuild([*container_args, "-scheme", selected_scheme, "-showBuildSettings"], root)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                notes.append(f"xcodebuild text fallback failed for scheme `{selected_scheme}`: {error}")
+                continue
             if fallback.returncode == 0:
                 parsed = parse_show_build_settings_text(fallback.stdout)
         for target in parsed:
@@ -714,6 +763,12 @@ def parse_pbx_settings(text: str) -> dict[str, str]:
         match = re.search(rf"\b{key}\s*=\s*([^;\n]+)", text)
         if match:
             settings[key] = match.group(1).strip().strip('"')
+    # Keep custom build settings too: generated Info.plist values often refer to
+    # indirection such as `$(CAMERA_PERMISSION_DESCRIPTION)`.
+    for match in re.finditer(r"\b([A-Z][A-Z0-9_]*)\s*=\s*([^;\n]*)", text):
+        settings[match.group(1)] = pbx_unquote(match.group(2))
+    for match in re.finditer(r"\b(INFOPLIST_KEY_[A-Za-z0-9_]+)\s*=\s*([^;\n]*)", text):
+        settings[match.group(1)] = pbx_unquote(match.group(2))
     return settings
 
 
@@ -754,6 +809,40 @@ def parse_pbx_list(body: str, key: str) -> list[str]:
     if not match:
         return []
     return re.findall(r"\b([A-F0-9]{24})\b", match.group(1))
+
+
+def parse_pbx_value_list(body: str, key: str) -> list[str]:
+    match = re.search(rf"\b{re.escape(key)}\s*=\s*\((.*?)\);", body, re.DOTALL)
+    if not match:
+        return []
+    values: list[str] = []
+    current: list[str] = []
+    quoted = False
+    escaped = False
+    for character in match.group(1):
+        if escaped:
+            current.append(character)
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            current.append(character)
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            current.append(character)
+            continue
+        if character == "," and not quoted:
+            value = pbx_unquote("".join(current))
+            if value:
+                values.append(value)
+            current = []
+            continue
+        current.append(character)
+    value = pbx_unquote("".join(current))
+    if value:
+        values.append(value)
+    return values
 
 
 def parse_pbx_scalar(body: str, key: str) -> str | None:
@@ -801,17 +890,12 @@ def normalize_member_path(path: str, all_files_by_name: dict[str, list[Path]], r
     return clean
 
 
-def expand_build_setting_path(value: str, settings: dict[str, str], root: Path) -> str:
+def expand_build_setting_value(value: str, settings: dict[str, str]) -> str:
     expanded = value.strip().strip('"')
-    variables = {
-        "PROJECT_DIR": str(root),
-        "SRCROOT": str(root),
-        **settings,
-    }
 
     def replacement(match: re.Match[str]) -> str:
         key = match.group(1) or match.group(2)
-        return variables.get(key, match.group(0))
+        return settings.get(key, match.group(0))
 
     for _ in range(4):
         next_value = re.sub(r"\$\(([^)]+)\)|\$\{([^}]+)\}", replacement, expanded)
@@ -819,6 +903,17 @@ def expand_build_setting_path(value: str, settings: dict[str, str], root: Path) 
             break
         expanded = next_value
     return expanded
+
+
+def expand_build_setting_path(value: str, settings: dict[str, str], root: Path) -> str:
+    return expand_build_setting_value(
+        value,
+        {
+            "PROJECT_DIR": str(root),
+            "SRCROOT": str(root),
+            **settings,
+        },
+    )
 
 
 def target_file_paths_from_settings(
@@ -862,6 +957,46 @@ def resolve_xml_file_ref_path(file_id: str, objects: dict[str, Any], cache: dict
     return path
 
 
+def normalized_membership_exception(path: str) -> str:
+    normalized = path.strip().strip('"').replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.strip("/")
+
+
+def is_synchronized_membership_exception(path: str, exceptions: set[str]) -> bool:
+    normalized = normalized_membership_exception(path)
+    return any(normalized == exception or normalized.startswith(f"{exception}/") for exception in exceptions if exception)
+
+
+def synchronized_group_file_paths(
+    group_path: str,
+    project_file: Path,
+    files: list[Path],
+    root: Path,
+    membership_exceptions: Iterable[str],
+) -> list[str]:
+    clean_path = pbx_unquote(group_path)
+    if not clean_path:
+        return []
+    group_root = (project_file.parent.parent / clean_path).resolve()
+    try:
+        group_root.relative_to(root.resolve())
+    except ValueError:
+        return []
+    exceptions = {normalized_membership_exception(path) for path in membership_exceptions}
+    members: list[str] = []
+    for path in files:
+        try:
+            group_relative = path.resolve().relative_to(group_root)
+        except ValueError:
+            continue
+        if is_synchronized_membership_exception(group_relative.as_posix(), exceptions):
+            continue
+        members.append(rel(path, root))
+    return sorted(dict.fromkeys(members))
+
+
 def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: dict[str, Any], files: list[Path]) -> list[TargetMembership]:
     all_files_by_name: dict[str, list[Path]] = {}
     for path in files:
@@ -883,13 +1018,14 @@ def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: di
             build_file_to_path[object_id] = normalized
 
     memberships: list[TargetMembership] = []
-    for item in objects.values():
+    for target_id, item in objects.items():
         if not isinstance(item, dict) or item.get("isa") != "PBXNativeTarget":
             continue
         target_name = str(item.get("name") or item.get("productName") or "UnnamedTarget")
         member_files: set[str] = set()
         phase_names: list[str] = []
         config_file_count = 0
+        synchronized_group_count = 0
         for phase_id in item.get("buildPhases", []):
             phase = objects.get(phase_id)
             if not isinstance(phase, dict):
@@ -902,6 +1038,39 @@ def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: di
                 path = build_file_to_path.get(build_file_id)
                 if path:
                     member_files.add(path)
+        synchronized_group_ids = item.get("fileSystemSynchronizedGroups", [])
+        if isinstance(synchronized_group_ids, list):
+            for group_id in synchronized_group_ids:
+                group = objects.get(group_id)
+                if not isinstance(group, dict) or group.get("isa") != "PBXFileSystemSynchronizedRootGroup":
+                    continue
+                raw_group_path = group.get("path") or group.get("name")
+                if not isinstance(raw_group_path, str):
+                    continue
+                membership_exceptions: list[str] = []
+                exception_ids = group.get("exceptions", [])
+                if isinstance(exception_ids, list):
+                    for exception_id in exception_ids:
+                        exception = objects.get(exception_id)
+                        if not isinstance(exception, dict):
+                            continue
+                        if exception.get("isa") != "PBXFileSystemSynchronizedBuildFileExceptionSet":
+                            continue
+                        if str(exception.get("target")) != str(target_id):
+                            continue
+                        raw_exceptions = exception.get("membershipExceptions", [])
+                        if isinstance(raw_exceptions, list):
+                            membership_exceptions.extend(str(path) for path in raw_exceptions)
+                member_files.update(
+                    synchronized_group_file_paths(
+                        raw_group_path,
+                        project_file,
+                        files,
+                        root,
+                        membership_exceptions,
+                    )
+                )
+                synchronized_group_count += 1
         config_list = objects.get(item.get("buildConfigurationList"))
         config_ids = config_list.get("buildConfigurations", []) if isinstance(config_list, dict) else []
         for config_id in config_ids:
@@ -918,6 +1087,8 @@ def parse_xml_pbx_target_memberships(root: Path, project_file: Path, objects: di
             config_file_count += len(config_files)
             member_files.update(config_files)
         evidence = [f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"]
+        if synchronized_group_count:
+            evidence.append(f"{rel(project_file, root)}: {synchronized_group_count} synchronized root group(s)")
         if config_file_count:
             evidence.append(f"{rel(project_file, root)}: target build settings referenced {config_file_count} configuration file(s)")
         memberships.append(
@@ -958,7 +1129,7 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
             if normalized:
                 build_file_to_path[object_id] = normalized
 
-        for _, (object_name, body) in objects.items():
+        for target_id, (object_name, body) in objects.items():
             if parse_pbx_scalar(body, "isa") != "PBXNativeTarget":
                 continue
             target_name = pbx_target_name(object_name, body)
@@ -966,6 +1137,7 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
             member_files: set[str] = set()
             phase_names: list[str] = []
             config_file_count = 0
+            synchronized_group_count = 0
             for phase_id in build_phase_ids:
                 phase = objects.get(phase_id)
                 if not phase:
@@ -979,6 +1151,35 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
                     path = build_file_to_path.get(build_file_id)
                     if path:
                         member_files.add(path)
+            for group_id in parse_pbx_list(body, "fileSystemSynchronizedGroups"):
+                group = objects.get(group_id)
+                if not group:
+                    continue
+                group_name, group_body = group
+                if parse_pbx_scalar(group_body, "isa") != "PBXFileSystemSynchronizedRootGroup":
+                    continue
+                raw_group_path = parse_pbx_scalar(group_body, "path") or parse_pbx_scalar(group_body, "name") or group_name
+                membership_exceptions: list[str] = []
+                for exception_id in parse_pbx_list(group_body, "exceptions"):
+                    exception = objects.get(exception_id)
+                    if not exception:
+                        continue
+                    _, exception_body = exception
+                    if parse_pbx_scalar(exception_body, "isa") != "PBXFileSystemSynchronizedBuildFileExceptionSet":
+                        continue
+                    if parse_pbx_scalar(exception_body, "target") != target_id:
+                        continue
+                    membership_exceptions.extend(parse_pbx_value_list(exception_body, "membershipExceptions"))
+                member_files.update(
+                    synchronized_group_file_paths(
+                        raw_group_path,
+                        project_file,
+                        files,
+                        root,
+                        membership_exceptions,
+                    )
+                )
+                synchronized_group_count += 1
             config_list_id = parse_pbx_scalar(body, "buildConfigurationList")
             config_list = objects.get(config_list_id) if config_list_id else None
             if config_list:
@@ -995,6 +1196,8 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
                     config_file_count += len(config_files)
                     member_files.update(config_files)
             evidence = [f"{rel(project_file, root)}: {', '.join(sorted(set(phase_names))) or 'no build phases'}"]
+            if synchronized_group_count:
+                evidence.append(f"{rel(project_file, root)}: {synchronized_group_count} synchronized root group(s)")
             if config_file_count:
                 evidence.append(f"{rel(project_file, root)}: target build settings referenced {config_file_count} configuration file(s)")
             memberships.append(
@@ -1007,6 +1210,125 @@ def parse_pbx_target_memberships(root: Path, files: list[Path]) -> list[TargetMe
                 )
             )
     return memberships
+
+
+def generated_info_plist_values_for_configuration(
+    settings: dict[str, str],
+    project_file: Path,
+    root: Path,
+    configuration_name: str,
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    prefix = "INFOPLIST_KEY_"
+    for setting_key, value in settings.items():
+        if not setting_key.startswith(prefix):
+            continue
+        plist_key = setting_key[len(prefix) :]
+        resolved_value = expand_build_setting_value(value, settings)
+        if (
+            not plist_key
+            or resolved_value.strip() in {"", "$(inherited)"}
+            or has_build_setting_reference(resolved_value)
+        ):
+            continue
+        values[plist_key] = (
+            f"{rel(project_file, root)}:{configuration_name}:{setting_key}={resolved_value!r}"
+        )
+    return values
+
+
+def common_generated_info_plist_values(
+    configurations: list[dict[str, str]],
+) -> dict[str, list[str]]:
+    if not configurations:
+        return {}
+    common_keys = set(configurations[0])
+    for configuration in configurations[1:]:
+        common_keys.intersection_update(configuration)
+    return {
+        key: list(dict.fromkeys(configuration[key] for configuration in configurations))
+        for key in sorted(common_keys)
+    }
+
+
+def target_generated_info_plist_values(
+    root: Path,
+    files: list[Path],
+    target_name: str | None,
+) -> dict[str, list[str]]:
+    if not target_name:
+        return {}
+
+    configurations: list[dict[str, str]] = []
+    for project_file in [path for path in files if path.name == "project.pbxproj"]:
+        xml_objects = load_xml_pbx_objects(project_file)
+        if xml_objects:
+            for item in xml_objects.values():
+                if not isinstance(item, dict) or item.get("isa") != "PBXNativeTarget":
+                    continue
+                name = str(item.get("name") or item.get("productName") or "UnnamedTarget")
+                if name != target_name:
+                    continue
+                config_list = xml_objects.get(item.get("buildConfigurationList"))
+                config_ids = config_list.get("buildConfigurations", []) if isinstance(config_list, dict) else []
+                for config_id in config_ids:
+                    config = xml_objects.get(config_id)
+                    build_settings = config.get("buildSettings") if isinstance(config, dict) else None
+                    settings = (
+                        {
+                            str(key): value if isinstance(value, str) else ""
+                            for key, value in build_settings.items()
+                        }
+                        if isinstance(build_settings, dict)
+                        else {}
+                    )
+                    configuration_name = (
+                        str(config.get("name") or config_id)
+                        if isinstance(config, dict)
+                        else str(config_id)
+                    )
+                    configurations.append(
+                        generated_info_plist_values_for_configuration(
+                            settings,
+                            project_file,
+                            root,
+                            configuration_name,
+                        )
+                    )
+            continue
+
+        objects = parse_pbx_objects(read_text(project_file))
+        for object_name, body in objects.values():
+            if parse_pbx_scalar(body, "isa") != "PBXNativeTarget":
+                continue
+            if pbx_target_name(object_name, body) != target_name:
+                continue
+            config_list_id = parse_pbx_scalar(body, "buildConfigurationList")
+            config_list = objects.get(config_list_id) if config_list_id else None
+            if not config_list:
+                continue
+            _, config_list_body = config_list
+            for config_id in parse_pbx_list(config_list_body, "buildConfigurations"):
+                config = objects.get(config_id)
+                if not config:
+                    configurations.append({})
+                    continue
+                config_object_name, config_body = config
+                configuration_name = (
+                    parse_pbx_scalar(config_body, "name")
+                    or config_object_name
+                    or config_id
+                )
+                configurations.append(
+                    generated_info_plist_values_for_configuration(
+                        parse_pbx_settings(config_body),
+                        project_file,
+                        root,
+                        configuration_name,
+                    )
+                )
+
+    return common_generated_info_plist_values(configurations)
 
 
 def select_target_membership(
@@ -1413,35 +1735,147 @@ def validate_privacy_manifests(
 
 
 def load_suppressions(root: Path) -> dict[str, str]:
+    def validate_entry(path: Path, index: int, finding_id: Any, reason: Any) -> tuple[str, str]:
+        normalized_id = finding_id.strip() if isinstance(finding_id, str) else ""
+        normalized_reason = reason.strip() if isinstance(reason, str) else ""
+        if not normalized_id:
+            raise ValueError(f"Invalid suppression config `{rel(path, root)}`: entry {index} is missing a finding id.")
+        if not normalized_reason or normalized_reason.lower() == "no reason provided.":
+            raise ValueError(
+                f"Invalid suppression config `{rel(path, root)}`: `{normalized_id}` needs a concrete review-oriented reason."
+            )
+        return normalized_id, normalized_reason
+
     candidates = [
         root / ".appstore-review-risk.json",
         root / ".appstore-review-risk.yml",
         root / ".appstore-review-risk.yaml",
     ]
     for path in candidates:
+        if path.is_symlink():
+            raise ValueError(
+                f"Invalid suppression config `{rel(path, root)}`: symbolic links are not supported."
+            )
         if not path.exists():
             continue
         text = read_text(path)
         if path.suffix == ".json":
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"Invalid suppression config `{rel(path, root)}` at line {error.lineno}, column {error.colno}: {error.msg}."
+                ) from None
+            if not isinstance(data, dict):
+                raise ValueError(f"Invalid suppression config `{rel(path, root)}`: the root value must be an object.")
             entries = data.get("suppressions", [])
-            return {
-                str(entry.get("id")): str(entry.get("reason", "No reason provided."))
-                for entry in entries
-                if isinstance(entry, dict) and entry.get("id")
-            }
+            if not isinstance(entries, list):
+                raise ValueError(f"Invalid suppression config `{rel(path, root)}`: `suppressions` must be an array.")
+            suppressions: dict[str, str] = {}
+            for index, entry in enumerate(entries, start=1):
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        f"Invalid suppression config `{rel(path, root)}`: entry {index} must be an object."
+                    )
+                finding_id, reason = validate_entry(path, index, entry.get("id"), entry.get("reason"))
+                suppressions[finding_id] = reason
+            return suppressions
         suppressions: dict[str, str] = {}
         current_id: str | None = None
-        for raw_line in text.splitlines():
+        current_reason: str | None = None
+        current_id_indent = -1
+        saw_header = False
+
+        def yaml_error(line_number: int, message: str) -> None:
+            raise ValueError(
+                f"Invalid suppression config `{rel(path, root)}` at line {line_number}: {message}."
+            )
+
+        def parse_yaml_scalar(raw_value: str, line_number: int, field_name: str) -> str:
+            value = raw_value.strip()
+            if not value:
+                return ""
+            if value.startswith('"'):
+                if len(value) < 2 or not value.endswith('"'):
+                    yaml_error(line_number, f"unterminated double-quoted `{field_name}`")
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError as error:
+                    yaml_error(line_number, f"invalid double-quoted `{field_name}`: {error.msg}")
+                if not isinstance(parsed, str):
+                    yaml_error(line_number, f"`{field_name}` must be a string")
+                return parsed
+            if value.startswith("'"):
+                if len(value) < 2 or not value.endswith("'"):
+                    yaml_error(line_number, f"unterminated single-quoted `{field_name}`")
+                inner = value[1:-1]
+                index = 0
+                while index < len(inner):
+                    if inner[index] != "'":
+                        index += 1
+                        continue
+                    if index + 1 >= len(inner) or inner[index + 1] != "'":
+                        yaml_error(
+                            line_number,
+                            f"single quotes inside `{field_name}` must be escaped as `''`",
+                        )
+                    index += 2
+                return inner.replace("''", "'")
+            if value.endswith(('"', "'")):
+                yaml_error(line_number, f"unmatched quote in `{field_name}`")
+            return value
+
+        def finish_yaml_entry() -> None:
+            nonlocal current_id, current_reason, current_id_indent
+            if current_id is None:
+                return
+            finding_id, reason = validate_entry(path, len(suppressions) + 1, current_id, current_reason)
+            suppressions[finding_id] = reason
+            current_id = None
+            current_reason = None
+            current_id_indent = -1
+
+        yaml_text = textwrap.dedent(text)
+        meaningful_lines = [
+            raw_line.strip()
+            for raw_line in yaml_text.splitlines()
+            if raw_line.strip() and not raw_line.lstrip().startswith("#")
+        ]
+        if meaningful_lines == ["suppressions: []"]:
+            return {}
+
+        for line_number, raw_line in enumerate(yaml_text.splitlines(), start=1):
             line = raw_line.strip()
-            id_match = re.match(r"-\s*id:\s*[\"']?([^\"']+?)[\"']?\s*$", line)
-            if id_match:
-                current_id = id_match.group(1).strip()
-                suppressions[current_id] = "No reason provided."
+            if not line or line.startswith("#") or (line == "---" and not saw_header):
                 continue
-            reason_match = re.match(r"reason:\s*[\"']?(.+?)[\"']?\s*$", line)
-            if current_id and reason_match:
-                suppressions[current_id] = reason_match.group(1).strip()
+            if "\t" in raw_line[: len(raw_line) - len(raw_line.lstrip())]:
+                yaml_error(line_number, "tabs are not supported for indentation")
+            indent = len(raw_line) - len(raw_line.lstrip(" "))
+            if line == "suppressions:":
+                if indent != 0 or saw_header or current_id is not None:
+                    yaml_error(line_number, "`suppressions:` must appear once at the top level")
+                saw_header = True
+                continue
+            if not saw_header:
+                yaml_error(line_number, "expected a top-level `suppressions:` key")
+            id_match = re.fullmatch(r"-\s*id:\s*(.*?)\s*", line)
+            if id_match:
+                if indent < 1:
+                    yaml_error(line_number, "suppression entries must be indented beneath `suppressions:`")
+                finish_yaml_entry()
+                current_id = parse_yaml_scalar(id_match.group(1), line_number, "id")
+                current_id_indent = indent
+                continue
+            reason_match = re.fullmatch(r"reason:\s*(.*?)\s*", line)
+            if current_id and reason_match and indent > current_id_indent:
+                if current_reason is not None:
+                    yaml_error(line_number, f"duplicate reason for `{current_id}`")
+                current_reason = parse_yaml_scalar(reason_match.group(1), line_number, "reason")
+                continue
+            yaml_error(line_number, "unsupported or misplaced YAML content")
+        if not saw_header:
+            yaml_error(1, "expected a top-level `suppressions:` key")
+        finish_yaml_entry()
         return suppressions
     return {}
 
@@ -1528,6 +1962,11 @@ def scan_result(
 
     target_memberships = parse_pbx_target_memberships(root, files)
     selected_membership = select_target_membership(target_memberships, submitted_target, notes)
+    generated_info_plist_values = target_generated_info_plist_values(
+        root,
+        files,
+        selected_membership.target if selected_membership else None,
+    )
     scan_text_files = scoped_text_files(text_files, root, selected_membership)
     plist_files = scoped_plist_files(all_plist_files, root, selected_membership)
     plist_file_set = set(plist_files)
@@ -1560,12 +1999,12 @@ def scan_result(
     if has_xcode_artifact and not privacy_manifest_paths:
         add(
             findings,
-            "MEDIUM",
+            "LOW",
             "Privacy",
-            "No PrivacyInfo.xcprivacy file found",
-            "medium",
+            "No app PrivacyInfo.xcprivacy file found; verify whether one is required",
+            "low",
             ["No PrivacyInfo.xcprivacy discovered in the scanned tree."],
-            "Verify whether the app or bundled SDKs collect data or use required-reason APIs. Add valid privacy manifests where required and align App Privacy answers.",
+            "Verify whether the app uses required-reason APIs or collects data that belongs in an app privacy manifest, and whether bundled SDKs that require their own manifests provide them. Add manifests where required and align App Privacy answers.",
             "privacy-no-privacy-manifest",
         )
 
@@ -1577,6 +2016,7 @@ def scan_result(
         values = []
         for accepted_key in accepted_keys:
             values.extend(plist_key_values(info_plists, accepted_key, root))
+            values.extend(generated_info_plist_values.get(accepted_key, []))
         if hits and not values:
             key_label = " or ".join(accepted_keys)
             add(
@@ -1604,7 +2044,11 @@ def scan_result(
                 )
 
     att_hits = text_hits(scan_text_files, [r"\bATTrackingManager\b", r"\bAppTrackingTransparency\b", r"\bASIdentifierManager\b", r"\badvertisingIdentifier\b"], root)
-    if att_hits and not plist_has_key(info_plists, "NSUserTrackingUsageDescription"):
+    if (
+        att_hits
+        and not plist_has_key(info_plists, "NSUserTrackingUsageDescription")
+        and "NSUserTrackingUsageDescription" not in generated_info_plist_values
+    ):
         add(
             findings,
             "HIGH",
@@ -1651,12 +2095,12 @@ def scan_result(
     if external_purchase_hits:
         add(
             findings,
-            "HIGH",
+            "MEDIUM",
             "StoreKit",
-            "External purchase or web billing language found",
+            "External purchase or web billing language requires storefront-specific review",
             "medium",
             external_purchase_hits,
-            "Confirm the app is not steering digital purchases outside StoreKit unless it has the correct entitlement, storefront eligibility, disclosure flow, and review notes.",
+            "Verify the current rule for every enabled storefront. United States storefront apps currently allow links and calls to action without the external-purchase-link entitlements; other storefronts or app categories may require an entitlement and disclosure flow or prohibit steering.",
             "storekit-external-purchase-language",
         )
 
@@ -1679,10 +2123,10 @@ def scan_result(
             findings,
             "MEDIUM",
             "Authentication",
-            "Third-party/social login found without obvious Sign in with Apple",
+            "Third-party/social login found without an obvious equivalent privacy-preserving option",
             "medium",
             social_hits,
-            "Verify whether Sign in with Apple parity is required for the login options offered, or document the applicable exception.",
+            "Verify Guideline 4.8: offer an equivalent login service that limits collection to name and email, lets users keep their email private, and avoids collecting app interactions for advertising without consent, or document an applicable exception. Sign in with Apple is one common implementation.",
             "authentication-third-party-login-without-apple",
         )
 
@@ -1692,10 +2136,10 @@ def scan_result(
             findings,
             "MEDIUM",
             "Accounts",
-            "Account creation/login clues found without obvious account deletion flow",
+            "Account creation/login clues found without obvious in-app account deletion initiation",
             "medium",
             account_hits,
-            "Verify the app exposes an in-app account deletion path or a clearly compliant deletion flow, and document it in review notes if not obvious.",
+            "Add an easy-to-find in-app way to initiate deletion of the full account and associated data. If completion occurs on the web, link directly to the completion page; ordinary apps should not require a generic support flow.",
             "accounts-missing-account-deletion-flow",
         )
 
@@ -1755,6 +2199,7 @@ def scan_result(
     findings.sort(key=lambda finding: (severity_order.get(finding.severity, 9), finding.category, finding.title))
     findings, suppressions_applied = apply_suppressions(findings, load_suppressions(root))
     artifact_checks = build_artifact_checks(root, files, findings)
+    notes.extend(unreadable_file_notes(root))
     return ScanResult(
         target_platforms=target_platforms,
         targets=targets,
@@ -1814,6 +2259,7 @@ def changed_files_for_diff(
     diff_range: str | None,
     base_ref: str,
     head_ref: str | None,
+    include_untracked: bool = False,
 ) -> list[str]:
     if diff_range:
         diff_args = [diff_range]
@@ -1830,16 +2276,43 @@ def changed_files_for_diff(
     if result.returncode != 0:
         raise ValueError(f"Could not list changed files: {result.stderr.decode(errors='ignore').strip()}")
 
+    raw_paths = result.stdout.split(b"\0")
+    if include_untracked:
+        untracked_result = subprocess.run(
+            ["git", "-C", str(git_root), "ls-files", "--others", "--exclude-standard", "-z", "--"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if untracked_result.returncode != 0:
+            raise ValueError(
+                f"Could not list untracked files: {untracked_result.stderr.decode(errors='ignore').strip()}"
+            )
+        raw_paths.extend(untracked_result.stdout.split(b"\0"))
+
+    git_root = git_root.resolve()
     scan_root = scan_root.resolve()
     changed: list[str] = []
-    for raw_path in result.stdout.split(b"\0"):
+    for raw_path in raw_paths:
         if not raw_path:
             continue
         git_relative = raw_path.decode("utf-8", errors="ignore")
-        absolute = (git_root / git_relative).resolve()
+        relative_path = Path(git_relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            continue
+        absolute = git_root / relative_path
         try:
             scanner_relative = absolute.relative_to(scan_root).as_posix()
         except ValueError:
+            continue
+        parents_within_repo = []
+        for parent in absolute.parents:
+            if parent == git_root:
+                break
+            parents_within_repo.append(parent)
+        if include_untracked and (
+            absolute.is_symlink() or any(parent.is_symlink() for parent in parents_within_repo)
+        ):
             continue
         changed.append(scanner_relative)
     return sorted(dict.fromkeys(changed))
@@ -1856,16 +2329,20 @@ def extract_git_archive(git_root: Path, ref: str, destination: Path) -> None:
         raise ValueError(f"Could not archive `{ref}`: {result.stderr.decode(errors='ignore').strip()}")
     with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
         destination = destination.resolve()
+        safe_members: list[tarfile.TarInfo] = []
         for member in archive.getmembers():
+            if not (member.isfile() or member.isdir()):
+                continue
             target = (destination / member.name).resolve()
             try:
                 target.relative_to(destination)
             except ValueError:
                 raise ValueError(f"Unsafe path in git archive: {member.name}")
+            safe_members.append(member)
         try:
-            archive.extractall(destination, filter="data")
+            archive.extractall(destination, members=safe_members, filter="data")
         except TypeError:
-            archive.extractall(destination)
+            archive.extractall(destination, members=safe_members)
 
 
 def scan_git_ref(
@@ -2072,6 +2549,7 @@ def diff_scan_result(
         diff_range=diff_label,
         base_ref=resolved_base_ref,
         head_ref=head_ref_for_scan,
+        include_untracked=head_ref_for_scan is None,
     )
     base_result = scan_git_ref(
         git_root,
@@ -2550,6 +3028,9 @@ def main(argv: list[str] | None = None) -> int:
     if not root.exists():
         print(f"Path does not exist: {root}", file=sys.stderr)
         return 2
+    if not root.is_dir():
+        print(f"Path is not a directory: {root}", file=sys.stderr)
+        return 2
 
     if args.diff or args.base_ref or args.head_ref:
         try:
@@ -2578,14 +3059,18 @@ def main(argv: list[str] | None = None) -> int:
 
         findings = diff_fail_findings(diff_result)
     else:
-        result = scan_result(
-            root,
-            use_xcodebuild=args.xcodebuild,
-            project=args.project,
-            workspace=args.workspace,
-            scheme=args.scheme,
-            submitted_target=args.submitted_target,
-        )
+        try:
+            result = scan_result(
+                root,
+                use_xcodebuild=args.xcodebuild,
+                project=args.project,
+                workspace=args.workspace,
+                scheme=args.scheme,
+                submitted_target=args.submitted_target,
+            )
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
         if args.format == "json":
             print(json.dumps({"target": str(root), **asdict(result)}, indent=2))
         elif args.format == "compact-json":

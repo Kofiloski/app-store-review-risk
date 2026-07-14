@@ -50,9 +50,9 @@ The default scanner output is compact; use it first. Use `--submitted-target <ta
    - privacy manifests and App Privacy answers aligned with actual collection/tracking
    - entitlements justified by visible app behavior
    - complete in-app purchase, restore, subscription, cancellation, and review-note paths
-   - compliant external purchase/account-management links
-   - Sign in with Apple parity when third-party/social login is offered
-   - in-app account deletion for apps that allow account creation
+   - storefront-specific external purchase/account-management links, including the current United States storefront rules
+   - an equivalent privacy-preserving login option that satisfies Guideline 4.8 when third-party/social login is offered; Sign in with Apple is one common implementation, not the wording of the rule itself
+   - an easy-to-find in-app way to initiate full account deletion for apps that allow account creation
    - moderation, reporting, blocking, and abuse handling for user-generated content
    - accurate metadata, screenshots, age rating, support URL, and review notes
 
@@ -89,7 +89,7 @@ Lead with risks, not a generic summary. Use this structure:
 - <summarize scanner output and any false positives dismissed>
 ```
 
-Use `Blocking Risk` only for issues likely to stop submission, such as crashes, inaccessible core flows, missing required permission strings, invalid privacy manifests, unresolved external purchase entitlement use, or missing account deletion where account creation exists. Use `Needs Verification` for policy areas that require current Apple guidance, App Store Connect configuration, legal context, or reviewer notes.
+Use `Blocking Risk` only for issues likely to stop submission, such as crashes, inaccessible core flows, missing required permission strings, invalid privacy manifests, unresolved storefront-specific external purchase compliance, or missing in-app account deletion initiation where account creation exists. Use `Needs Verification` for policy areas that require current Apple guidance, App Store Connect configuration, legal context, or reviewer notes.
 
 ## Review Discipline
 

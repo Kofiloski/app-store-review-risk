@@ -14,7 +14,7 @@ Use when repository evidence is not enough to prove review readiness. Many App R
 
 ## Suppression File
 
-Use `.appstore-review-risk.yml` only for documented false positives. Keep reasons review-oriented, not just "ignore".
+Use `.appstore-review-risk.yml` only for documented false positives. Every suppression requires a non-empty, review-oriented reason; malformed files and reasonless entries stop the scan with a configuration error instead of silently hiding findings.
 
 ```yaml
 suppressions:

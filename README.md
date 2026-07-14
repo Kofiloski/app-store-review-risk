@@ -31,6 +31,8 @@ Always verify decisions against Apple's official documentation and current requi
 
 Treat scanner findings as review leads, not final policy determinations. App Review, Apple documentation, and App Store Connect configuration remain the source of truth.
 
+Two especially change-prone checks require live verification: external purchase/account links vary by storefront (including distinct United States storefront rules), and Guideline 4.8 specifies privacy outcomes for an equivalent login option rather than naming a single required provider. The scanner intentionally flags these as investigation leads.
+
 ## What It Covers
 
 - iOS and iPadOS apps
@@ -175,7 +177,7 @@ Diff mode scans the base version from Git without checking it out, then scans ei
 - `changed_file_findings`: pre-existing findings whose current evidence references changed files
 - `resolved_findings`: findings present in the base version but no longer present in the head version
 
-Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--base-ref <ref>` when comparing a release tag to the current working tree.
+Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--base-ref <ref>` when comparing a release tag to the current working tree. Working-tree comparisons include non-ignored untracked files.
 
 ## Skill Layout
 
@@ -190,6 +192,7 @@ Use `--diff <range>` for common Git ranges such as `origin/main...HEAD`. Use `--
 ## Limitations
 
 - The scanner is heuristic and may produce false positives or miss behavior hidden behind runtime configuration, remote services, feature flags, or App Store Connect-only setup.
+- Symbolic links are not followed, so linked source outside the scanned tree must be inspected separately.
 - Current Apple policy should be checked before making high-impact conclusions.
 - Repository scans cannot prove metadata, privacy answers, subscription products, entitlement approvals, backend availability, or demo credentials unless those artifacts are present in the repo.
 
