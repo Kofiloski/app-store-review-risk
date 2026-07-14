@@ -14,6 +14,57 @@ ACTION_RUNNER = ROOT / "scripts" / "run-action.sh"
 RELEASE_VERSION_CHECK = ROOT / "scripts" / "check-release-version.py"
 SCANNER = ROOT / "scripts" / "scan_apple_app_review_risks.py"
 SKILL_ROOT = ROOT / "skills" / "app-store-review-risk"
+MINIMUM_NODE24_ACTION_MAJORS = {
+    "actions/checkout": 5,
+    "actions/setup-python": 6,
+    "actions/upload-artifact": 6,
+    "actions/download-artifact": 7,
+}
+ACTION_REFERENCE = re.compile(
+    r"^[ \t]*(?:-[ \t]*)?(?:uses|['\"]uses['\"]):[ \t]*['\"]?"
+    r"(?P<action>actions/[a-z0-9_-]+)@(?P<ref>[^'\"\s#]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+ACTION_MAJOR_REF = re.compile(r"v(?P<major>\d+)(?:\.\d+){0,2}\Z", re.IGNORECASE)
+BLOCK_SCALAR_START = re.compile(
+    r"^[ ]*(?:-[ ]*)?(?:[A-Za-z0-9_-]+|['\"][^'\"]+['\"]):"
+    r"[ ]*[|>][0-9+-]*[ ]*(?:#.*)?$"
+)
+
+
+def action_references(text: str):
+    block_parent_indent: int | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" "))
+
+        if block_parent_indent is not None:
+            if not stripped or indent > block_parent_indent:
+                continue
+            block_parent_indent = None
+
+        if BLOCK_SCALAR_START.match(line):
+            block_parent_indent = indent
+            continue
+
+        match = ACTION_REFERENCE.match(line)
+        if match:
+            yield match
+
+
+def reviewed_node24_major(action: str, ref: str) -> int:
+    minimum = MINIMUM_NODE24_ACTION_MAJORS.get(action)
+    if minimum is None:
+        raise ValueError(f"{action} has no reviewed Node 24 minimum")
+    version = ACTION_MAJOR_REF.fullmatch(ref)
+    if version is None:
+        raise ValueError(f"{action}@{ref} requires explicit Node 24 review")
+    major = int(version.group("major"))
+    if major < minimum:
+        raise ValueError(
+            f"{action}@{ref} requires at least v{minimum} for Node 24"
+        )
+    return major
 
 
 def write_executable(path: Path, content: str) -> None:
@@ -116,10 +167,53 @@ class DistributionTests(unittest.TestCase):
 
         self.assertIn('name: "App Store Review Risk"', metadata)
         self.assertIn('using: "composite"', metadata)
-        self.assertIn("actions/setup-python@v5", metadata)
+        self.assertIn("actions/setup-python@v6", metadata)
         self.assertIn("scripts/run-action.sh", metadata)
         self.assertIn("branding:", metadata)
         self.assertIn("uses: ./", ci_workflow)
+
+    def test_workflows_do_not_use_node_20_action_majors(self):
+        action_and_workflows = [
+            ROOT / "action.yml",
+            *(ROOT / ".github" / "workflows").glob("*.yml"),
+            *(ROOT / ".github" / "workflows").glob("*.yaml"),
+        ]
+        content = "\n".join(path.read_text(encoding="utf-8") for path in action_and_workflows)
+
+        checked_references = 0
+        for match in action_references(content):
+            action = match.group("action").lower()
+            checked_references += 1
+            reviewed_node24_major(action, match.group("ref"))
+
+        self.assertGreater(checked_references, 0)
+        self.assertIsNone(
+            ACTION_REFERENCE.search("# migrated from uses: actions/setup-python@v5")
+        )
+        self.assertEqual(
+            [
+                match.group("ref")
+                for match in action_references(
+                    "run: |\n  uses: actions/setup-python@v5\n"
+                    "- uses: actions/setup-python@v6\n"
+                )
+            ],
+            ["v6"],
+        )
+        self.assertEqual(
+            [
+                match.group("ref")
+                for match in action_references(
+                    '- "uses": actions/setup-python@v5\n'
+                )
+            ],
+            ["v5"],
+        )
+        with self.assertRaisesRegex(ValueError, "requires explicit Node 24 review"):
+            reviewed_node24_major("actions/setup-python", "a" * 40)
+        self.assertIn("actions/setup-python@v6", content)
+        self.assertIn("actions/upload-artifact@v6", content)
+        self.assertIn("actions/download-artifact@v7", content)
 
     def test_demo_output_matches_the_real_scanner(self):
         demo_root = ROOT / "examples" / "demo-app"
@@ -204,9 +298,26 @@ class DistributionTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "publish-pypi.yml").read_text(encoding="utf-8")
 
         self.assertIn("release:\n    types:\n      - published", workflow)
+        self.assertIn("workflow_dispatch:\n    inputs:\n      release_tag:", workflow)
+        self.assertIn(
+            "group: pypi-${{ github.event.release.tag_name || inputs.release_tag }}",
+            workflow,
+        )
+        self.assertIn("github.ref != 'refs/heads/main'", workflow)
+        self.assertIn(
+            "ref: refs/tags/${{ github.event.release.tag_name || inputs.release_tag }}",
+            workflow,
+        )
+        self.assertIn("gh release view", workflow)
+        self.assertIn("isDraft,tagName", workflow)
+        self.assertIn('git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"', workflow)
+        self.assertIn('git rev-list -n 1 "refs/tags/${RELEASE_TAG}"', workflow)
+        self.assertIn('git rev-parse HEAD', workflow)
+        self.assertIn('python scripts/check-release-version.py "${RELEASE_TAG}"', workflow)
         self.assertIn("needs: build", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertIn("environment:\n      name: pypi", workflow)
+        self.assertIn("skip-existing: true", workflow)
         self.assertRegex(
             workflow,
             r"pypa/gh-action-pypi-publish@[0-9a-f]{40} # release/v1",

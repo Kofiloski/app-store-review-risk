@@ -51,6 +51,12 @@ The default compact format is preferred for an agent's first pass. Treat finding
 
 The root action.yml installs the repository package and invokes scripts/run-action.sh. Static scans work on Linux or macOS; xcodebuild mode requires macOS. Fetch full Git history before using diff mode.
 
+## Release channels
+
+- A GitHub release versions the Agent Skill bundle, composite action, and repository source.
+- PyPI publishes only the optional Python CLI wheel and source distribution from that same release tag.
+- A manual PyPI retry checks out and validates an existing tag; it does not publish a second skill release.
+
 ## Demonstration and validation
 
 - examples/demo-app — intentionally incomplete iOS fixture.

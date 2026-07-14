@@ -4,12 +4,18 @@ on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing GitHub release tag to retry, for example v0.3.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: pypi-${{ github.event.release.tag_name }}
+  group: pypi-${{ github.event.release.tag_name || inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -17,11 +23,32 @@ jobs:
     name: Build and verify distributions
     runs-on: ubuntu-latest
     steps:
+      - name: Require manual retries to use the main workflow
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "Run manual PyPI retries from the main branch workflow."
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Require a published GitHub release for manual retries
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          published_tag="$(gh release view "${RELEASE_TAG}" --json isDraft,tagName --jq 'select(.isDraft == false) | .tagName')"
+          if [[ "${published_tag}" != "${RELEASE_TAG}" ]]; then
+            echo "Release ${RELEASE_TAG} must exist and be published before retrying PyPI."
+            exit 1
+          fi
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -29,7 +56,20 @@ jobs:
         run: python -m pip install build
 
       - name: Verify release tag matches package version
-        run: python scripts/check-release-version.py "${GITHUB_REF_NAME}"
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            echo "Release tag ${RELEASE_TAG} does not exist in this repository."
+            exit 1
+          fi
+          tag_commit="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "${head_commit}" != "${tag_commit}" ]]; then
+            echo "Checked-out commit ${head_commit} does not match ${RELEASE_TAG} at ${tag_commit}."
+            exit 1
+          fi
+          python scripts/check-release-version.py "${RELEASE_TAG}"
 
       - name: Run project checks
         run: ./scripts/check-skill.sh
@@ -44,7 +84,7 @@ jobs:
           app-store-review-risk --help
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-distributions
           path: dist/
@@ -61,10 +101,12 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-distributions
           path: dist/
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          skip-existing: true

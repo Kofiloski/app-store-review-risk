@@ -47,6 +47,15 @@ app-store-review-risk . --submitted-target MyApp
 
 The scanner is packaged for Python 3.10 and newer. A tokenless PyPI Trusted Publishing workflow is included; until the first PyPI release exists, the GitHub installation above is the canonical public install.
 
+## Why GitHub and PyPI Are Separate
+
+One version tag serves three related deliverables, but they are distributed through two channels:
+
+- The GitHub release versions the Agent Skill in `skills/app-store-review-risk/`, the root composite action, and the source repository. Installing the skill with `gh skill install` or `npx skills add` does not involve PyPI.
+- The PyPI workflow publishes only the optional `app-store-review-risk` Python CLI wheel and source distribution. It runs automatically when the GitHub release is published.
+
+If Trusted Publisher setup was missing or PyPI was temporarily unavailable, manually dispatch `Publish to PyPI` from the `main` branch and enter the existing release tag. The workflow checks out that exact tag, verifies it matches all package version metadata, rebuilds it, and skips files PyPI already accepted. A manual retry never creates or replaces the GitHub release or Agent Skill.
+
 ## Real Scanner Output
 
 This finding comes from the checked-in [`examples/demo-app`](https://github.com/Kofiloski/app-store-review-risk/tree/main/examples/demo-app) fixture, not a mocked interface:
