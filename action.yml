@@ -1,0 +1,90 @@
+name: "App Store Review Risk"
+description: "Scan Apple app repositories and pull requests for likely App Store, privacy, entitlement, and StoreKit risks."
+author: "Kristijan Kofiloski"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  path:
+    description: "Apple app repository or project directory to scan."
+    required: false
+    default: "."
+  submitted-target:
+    description: "Xcode target name used for target-aware file and configuration scoping."
+    required: false
+    default: ""
+  diff:
+    description: "Git diff range to compare, for example origin/main...HEAD."
+    required: false
+    default: ""
+  base-ref:
+    description: "Base Git ref for a release or working-tree comparison."
+    required: false
+    default: ""
+  head-ref:
+    description: "Optional head Git ref used with base-ref."
+    required: false
+    default: ""
+  fail-on:
+    description: "Failure threshold: none, high, or medium."
+    required: false
+    default: "high"
+  format:
+    description: "Output format: compact, compact-json, markdown, or json."
+    required: false
+    default: "compact"
+  max-findings:
+    description: "Maximum findings included in compact output."
+    required: false
+    default: "12"
+  xcodebuild:
+    description: "Use xcodebuild for exact target metadata; requires a macOS runner."
+    required: false
+    default: "false"
+  project:
+    description: "Optional .xcodeproj path passed to xcodebuild."
+    required: false
+    default: ""
+  workspace:
+    description: "Optional .xcworkspace path passed to xcodebuild."
+    required: false
+    default: ""
+  scheme:
+    description: "Optional scheme passed to xcodebuild."
+    required: false
+    default: ""
+  python-version:
+    description: "Python version used to run the scanner."
+    required: false
+    default: "3.12"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install App Store Review Risk
+      shell: bash
+      run: python -m pip install "$GITHUB_ACTION_PATH"
+
+    - name: Scan App Store review risks
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_SUBMITTED_TARGET: ${{ inputs.submitted-target }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_HEAD_REF: ${{ inputs.head-ref }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_MAX_FINDINGS: ${{ inputs.max-findings }}
+        INPUT_XCODEBUILD: ${{ inputs.xcodebuild }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_WORKSPACE: ${{ inputs.workspace }}
+        INPUT_SCHEME: ${{ inputs.scheme }}
+      run: '"$GITHUB_ACTION_PATH/scripts/run-action.sh"'

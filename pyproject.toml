@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "app-store-review-risk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Static scanner and Codex skill for Apple App Store review risk preflight checks."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "Kristijan Kofiloski" }
 ]
@@ -40,7 +41,6 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Quality Assurance"
@@ -50,6 +50,8 @@ classifiers = [
 Homepage = "https://github.com/Kofiloski/app-store-review-risk"
 Repository = "https://github.com/Kofiloski/app-store-review-risk"
 Issues = "https://github.com/Kofiloski/app-store-review-risk/issues"
+"Agent Skill" = "https://github.com/Kofiloski/app-store-review-risk/blob/main/skills/app-store-review-risk/SKILL.md"
+"GitHub Action" = "https://github.com/Kofiloski/app-store-review-risk/blob/main/action.yml"
 
 [project.scripts]
 app-store-review-risk = "app_store_review_risk.cli:main"

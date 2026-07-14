@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If this software supports your work, please cite it using the metadata in this file."
+title: "app-store-review-risk"
+type: software
+authors:
+  - family-names: "Kofiloski"
+    given-names: "Kristijan"
+repository-code: "https://github.com/Kofiloski/app-store-review-risk"
+url: "https://github.com/Kofiloski/app-store-review-risk"
+license: MIT
+version: 0.3.0
+date-released: 2026-07-14
+keywords:
+  - App Store Review
+  - iOS
+  - macOS
+  - privacy manifest
+  - static analysis
+  - Agent Skill

@@ -1,0 +1,18 @@
+# Apple App Review Risk Scan Summary
+
+Target: `examples/demo-app`
+Platforms: iOS (high), iPadOS (high)
+Targets:
+- Risk Demo: com.example.ReviewRiskDemo, iOS, iPadOS, App Store / TestFlight
+Findings: HIGH=1, MEDIUM=0, LOW=1, INFO=0
+
+- HIGH `permissions-missing-nscamerausagedescription`: Potential protected-resource use without NSCameraUsageDescription (medium)
+  evidence: `Sources/CameraView.swift:4: _ = AVCaptureDevice.default(for: .video)`
+- LOW `privacy-no-privacy-manifest`: No app PrivacyInfo.xcprivacy file found; verify whether one is required (low)
+  evidence: `No PrivacyInfo.xcprivacy discovered in the scanned tree.`
+
+Artifact gaps:
+- App Store metadata and screenshots: missing_from_repo
+- Review notes and demo access: missing_from_repo
+- App Privacy answers: missing_from_repo
+- Privacy policy and support URL: missing_from_repo

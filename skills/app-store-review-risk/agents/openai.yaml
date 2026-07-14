@@ -1,0 +1,4 @@
+interface:
+  display_name: "App Store Review Risk"
+  short_description: "Flag Apple App Review rejection risks"
+  default_prompt: "Use $app-store-review-risk to review this Apple app repo for likely App Store rejection risks before submission."
