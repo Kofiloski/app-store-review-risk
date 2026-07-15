@@ -56,6 +56,8 @@ One version tag serves three related deliverables, but they are distributed thro
 
 If Trusted Publisher setup was missing or PyPI was temporarily unavailable, manually dispatch `Publish to PyPI` from the `main` branch and enter the existing release tag. The workflow checks out that exact tag, verifies it matches all package version metadata, rebuilds it, and skips files PyPI already accepted. A manual retry never creates or replaces the GitHub release or Agent Skill.
 
+Pushing an exact `vX.Y.Z` tag runs the repository-owned release workflow, which validates the tag, creates the GitHub release, and dispatches the PyPI workflow with GitHub's built-in token. Maintainers do not need to authorize GitHub CLI with personal or organization scopes.
+
 For the first PyPI release, register a pending Trusted Publisher at <https://pypi.org/manage/account/publishing/> with project `app-store-review-risk`, owner `Kofiloski`, repository `app-store-review-risk`, workflow `publish-pypi.yml`, and environment `pypi`. These values must match exactly; no API token is stored in GitHub.
 
 ## Real Scanner Output

@@ -344,6 +344,21 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertNotIn("secrets.", workflow)
 
+    def test_tag_push_creates_the_github_release_without_personal_auth(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('tags:\n      - "v*.*.*"', workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn('python scripts/check-release-version.py "${RELEASE_TAG}"', workflow)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertIn('gh release create "${RELEASE_TAG}"', workflow)
+        self.assertIn("gh workflow run publish-pypi.yml", workflow)
+        self.assertIn('--field release_tag="${RELEASE_TAG}"', workflow)
+        self.assertNotIn("secrets.", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
