@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing GitHub release tag to retry, for example v0.3.0"
+        description: "Existing GitHub release tag to retry, for example v0.3.1"
         required: true
         type: string
 
@@ -81,6 +81,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install dist/*.whl
+          app-store-review-risk --version
           app-store-review-risk --help
 
       - name: Upload distributions
@@ -109,4 +110,5 @@ jobs:
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
+          attestations: true
           skip-existing: true

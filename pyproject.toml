@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "app-store-review-risk"
-version = "0.3.0"
+version = "0.3.1"
 description = "Static scanner and Codex skill for Apple App Store review risk preflight checks."
 readme = "README.md"
 requires-python = ">=3.10"

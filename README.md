@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml)
 [![GitHub release](https://img.shields.io/github/v/release/Kofiloski/app-store-review-risk)](https://github.com/Kofiloski/app-store-review-risk/releases)
+[![PyPI](https://img.shields.io/pypi/v/app-store-review-risk)](https://pypi.org/project/app-store-review-risk/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Kofiloski/app-store-review-risk/blob/main/LICENSE)
 [![skills.sh](https://skills.sh/b/Kofiloski/app-store-review-risk)](https://skills.sh/Kofiloski/app-store-review-risk)
@@ -41,11 +42,10 @@ The public bundle lives at `skills/app-store-review-risk/`, matching its frontma
 ## 30-Second CLI Preflight
 
 ```bash
-pipx install git+https://github.com/Kofiloski/app-store-review-risk.git
-app-store-review-risk . --submitted-target MyApp
+uvx app-store-review-risk . --submitted-target MyApp
 ```
 
-The scanner is packaged for Python 3.10 and newer. A tokenless PyPI Trusted Publishing workflow is included; until the first PyPI release exists, the GitHub installation above is the canonical public install.
+For a persistent command, run `pipx install app-store-review-risk`. The scanner is packaged for Python 3.10 and newer, and PyPI is the low-friction CLI channel; GitHub remains the canonical source for the Agent Skill, Action, release history, and development.
 
 ## Why GitHub and PyPI Are Separate
 
@@ -55,6 +55,8 @@ One version tag serves three related deliverables, but they are distributed thro
 - The PyPI workflow publishes only the optional `app-store-review-risk` Python CLI wheel and source distribution. It runs automatically when the GitHub release is published.
 
 If Trusted Publisher setup was missing or PyPI was temporarily unavailable, manually dispatch `Publish to PyPI` from the `main` branch and enter the existing release tag. The workflow checks out that exact tag, verifies it matches all package version metadata, rebuilds it, and skips files PyPI already accepted. A manual retry never creates or replaces the GitHub release or Agent Skill.
+
+For the first PyPI release, register a pending Trusted Publisher at <https://pypi.org/manage/account/publishing/> with project `app-store-review-risk`, owner `Kofiloski`, repository `app-store-review-risk`, workflow `publish-pypi.yml`, and environment `pypi`. These values must match exactly; no API token is stored in GitHub.
 
 ## Real Scanner Output
 
@@ -107,7 +109,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: Kofiloski/app-store-review-risk@v0.3.0
+      - uses: Kofiloski/app-store-review-risk@v0.3.1
         with:
           path: .
           submitted-target: MyApp
@@ -132,13 +134,25 @@ Static scans also work on Linux runners. Set `xcodebuild: true` only on a macOS 
 With `pipx`:
 
 ```bash
-pipx install git+https://github.com/Kofiloski/app-store-review-risk.git
+pipx install app-store-review-risk
 ```
 
 With `pip`:
 
 ```bash
-python3 -m pip install git+https://github.com/Kofiloski/app-store-review-risk.git
+python3 -m pip install app-store-review-risk
+```
+
+Run once without a persistent install:
+
+```bash
+uvx app-store-review-risk . --submitted-target MyApp
+```
+
+Install an immutable GitHub release directly:
+
+```bash
+pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.1"
 ```
 
 From a local clone:

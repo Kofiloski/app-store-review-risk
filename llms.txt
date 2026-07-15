@@ -33,9 +33,17 @@ Suggested prompt:
 
 ## Deterministic scanner
 
-Install from GitHub:
+Run from PyPI without a persistent install:
 
-    pipx install git+https://github.com/Kofiloski/app-store-review-risk.git
+    uvx app-store-review-risk .
+
+Install the CLI persistently:
+
+    pipx install app-store-review-risk
+
+Install an immutable GitHub release directly:
+
+    pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.1"
 
 Common commands:
 

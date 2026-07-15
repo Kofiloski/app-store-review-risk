@@ -254,7 +254,10 @@ class DistributionTests(unittest.TestCase):
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
 
         self.assertIn("app-store-review-risk /path/to/app/repo", skill)
-        self.assertIn("app-store-review-risk.git@v0.3.0", skill)
+        self.assertIn(
+            "uvx --from app-store-review-risk==0.3.1 app-store-review-risk",
+            skill,
+        )
         self.assertNotIn("scripts/scan_apple_app_review_risks.py", skill)
         self.assertTrue((SKILL_ROOT / "agents" / "openai.yaml").is_file())
         self.assertTrue((SKILL_ROOT / "references" / "apple-platform-risk-areas.md").is_file())
@@ -268,6 +271,21 @@ class DistributionTests(unittest.TestCase):
         self.assertIsNotNone(package_version)
         self.assertIsNotNone(citation_version)
         self.assertEqual(citation_version.group(1), package_version.group(1))
+
+    def test_cli_reports_package_version_without_a_scan_path(self):
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        package_version = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
+        self.assertIsNotNone(package_version)
+
+        result = subprocess.run(
+            [str(SCANNER), "--version"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.stdout.strip(), package_version.group(1))
 
     def test_release_version_check_accepts_only_the_package_tag(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -314,10 +332,12 @@ class DistributionTests(unittest.TestCase):
         self.assertIn('git rev-list -n 1 "refs/tags/${RELEASE_TAG}"', workflow)
         self.assertIn('git rev-parse HEAD', workflow)
         self.assertIn('python scripts/check-release-version.py "${RELEASE_TAG}"', workflow)
+        self.assertIn("app-store-review-risk --version", workflow)
         self.assertIn("needs: build", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertIn("environment:\n      name: pypi", workflow)
         self.assertIn("skip-existing: true", workflow)
+        self.assertIn("attestations: true", workflow)
         self.assertRegex(
             workflow,
             r"pypa/gh-action-pypi-publish@[0-9a-f]{40} # release/v1",

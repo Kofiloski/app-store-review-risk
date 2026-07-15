@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import __version__
+
 
 SKIP_DIRS = {
     ".build",
@@ -3010,6 +3012,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     parser = argparse.ArgumentParser(description="Scan Apple app repositories for App Review risk signals.")
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("path", type=Path, help="Path to an Apple app repository or project directory.")
     parser.add_argument("--format", choices=("compact", "markdown", "json", "compact-json"), default="compact")
     parser.add_argument("--max-findings", type=int, default=12, help="Maximum findings to show in compact output.")

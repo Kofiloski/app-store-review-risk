@@ -22,10 +22,10 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
 app-store-review-risk /path/to/app/repo
 ```
 
-The published skill bundle intentionally does not duplicate the scanner package. If the CLI is missing, use this release-pinned fallback only when network installation is authorized and `pipx` is available:
+The published skill bundle intentionally does not duplicate the scanner package. If the CLI is missing, use this release-pinned ephemeral command only when network installation is authorized and `uvx` is available:
 
 ```bash
-pipx run --spec "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.0" app-store-review-risk /path/to/app/repo
+uvx --from app-store-review-risk==0.3.1 app-store-review-risk /path/to/app/repo
 ```
 
 Do not install from an unpinned branch. If neither the CLI nor authorized network installation is available, continue with the target matrix and file-backed manual review, and state that the deterministic scanner was not run.
