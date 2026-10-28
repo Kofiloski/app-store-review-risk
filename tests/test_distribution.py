@@ -252,10 +252,13 @@ class DistributionTests(unittest.TestCase):
 
     def test_published_skill_uses_installed_or_release_pinned_scanner(self):
         skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        package_version = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
+        self.assertIsNotNone(package_version)
 
         self.assertIn("app-store-review-risk /path/to/app/repo", skill)
         self.assertIn(
-            "uvx --from app-store-review-risk==0.3.1 app-store-review-risk",
+            f"uvx --from app-store-review-risk=={package_version.group(1)} app-store-review-risk",
             skill,
         )
         self.assertNotIn("scripts/scan_apple_app_review_risks.py", skill)

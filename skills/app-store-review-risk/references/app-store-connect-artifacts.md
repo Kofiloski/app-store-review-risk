@@ -6,6 +6,7 @@ Use when repository evidence is not enough to prove review readiness. Many App R
 
 - App Store Connect metadata: name, subtitle, description, keywords, category, age rating, support URL, marketing URL, privacy policy URL, and copyright.
 - Screenshots and previews for every submitted platform, device class, localization, and major gated flow.
+- Creative assets, including product-page headers and search assets when used, reviewed separately under the current metadata rules. Check the actual App Store Connect requirements and effective dates before calling a missing asset blocking.
 - App Privacy answers aligned with code, SDKs, analytics, tracking, collected data, linked data, and privacy manifests.
 - Review notes explaining non-obvious features, hardware needs, sample data, region limits, entitlement approvals, and in-app purchase flows.
 - Demo account or full-featured demo mode for account-based apps.

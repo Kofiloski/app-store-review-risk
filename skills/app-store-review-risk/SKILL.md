@@ -16,7 +16,13 @@ Use this skill to produce a practical pre-submission risk review for Apple-platf
    - Create a target matrix before findings: target/scheme, bundle identifier, product type, platform(s), submission path, and evidence.
    - Do not apply every platform checklist blindly. Apply App Review Guidelines globally, then apply HIG and developer guidance for the identified platform(s): iOS/iPadOS, macOS, watchOS, tvOS, visionOS, and notarized iOS/iPadOS apps when present.
 
-2. Run the static scanner when a repo path is available. Use an already installed CLI first:
+2. Fetch Apple's current App Review Guidelines and check the latest official guideline-update notice for every review, including PR/diff reviews. Read [references/current-policy.md](references/current-policy.md) for the source check, applicability rules, and offline fallback.
+   - Use the live [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/) as the primary rejection-risk baseline. Record the retrieval date and Apple's displayed revision date separately.
+   - Read the applicable sections and exceptions, including recent changes relevant to the target matrix, before interpreting scanner findings. Bundled references and the pinned scanner are review aids, not a current policy snapshot.
+   - Use [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines) for supporting platform/design evidence and developer documentation for implementation requirements. Verify current storefront/region, entitlement, distribution-path, and effective-date conditions when they affect a finding.
+   - If live sources cannot be retrieved, continue the file-backed review, disclose the gap, and mark dependent policy conclusions `Needs Verification`. Do not call the result a review against the latest guidelines.
+
+3. Run the static scanner when a repo path is available. Use an already installed CLI first:
 
 ```bash
 app-store-review-risk /path/to/app/repo
@@ -25,26 +31,20 @@ app-store-review-risk /path/to/app/repo
 The published skill bundle intentionally does not duplicate the scanner package. If the CLI is missing, use this release-pinned ephemeral command only when network installation is authorized and `uvx` is available:
 
 ```bash
-uvx --from app-store-review-risk==0.3.1 app-store-review-risk /path/to/app/repo
+uvx --from app-store-review-risk==0.3.2 app-store-review-risk /path/to/app/repo
 ```
 
 Do not install from an unpinned branch. If neither the CLI nor authorized network installation is available, continue with the target matrix and file-backed manual review, and state that the deterministic scanner was not run.
 
 The default scanner output is compact; use it first. Use `--submitted-target <target>` when the submitted Xcode target is known so code-pattern findings ignore files from other targets. For PR or release-delta reviews, use `--diff <range>` or `--base-ref <ref> [--head-ref <ref>]` to compare versions and prioritize new findings plus existing findings that touch changed files. Use `--xcodebuild --scheme <scheme>` when the repo can run Xcode commands and exact target metadata is needed. Use `--format markdown` or `--format json` only when drilling into specific finding IDs or feeding another tool. Use `--format compact-json` when structured output is needed but token budget matters. Treat scanner findings as leads, not verdicts.
 
-3. Read `references/apple-platform-risk-areas.md` for the shared risk map, then read only the platform file(s) matching the target matrix:
+4. Read `references/apple-platform-risk-areas.md` for the shared risk map, then read only the platform file(s) matching the target matrix:
    - `references/ios-ipados.md` for iOS/iPadOS apps and iOS apps distributed through notarization.
    - `references/macos.md` for macOS apps, Mac Catalyst targets, helper tools, sandboxing, or notarization.
    - `references/watchos.md` for watch apps, WatchKit extensions, complications, workouts, and companion dependencies.
    - `references/tvos.md` for tvOS apps, focus navigation, media, top shelf, and TV subscriptions.
    - `references/visionos.md` for visionOS windows, volumes, immersive spaces, comfort, spatial input, and privacy.
    - `references/app-store-connect-artifacts.md` when metadata, screenshots, privacy answers, review notes, subscription config, or suppression files are missing or need review.
-
-4. Use Apple's official guidance as the evaluation baseline.
-   - Treat App Review Guidelines as the primary source for rejection risk: https://developer.apple.com/app-store/review/guidelines/
-   - Use Human Interface Guidelines for the identified platform's design, interaction, platform convention, accessibility, and UX-quality risks that can affect review: https://developer.apple.com/design/human-interface-guidelines
-   - Use developer documentation for implementation-specific requirements, including privacy manifest files, required-reason APIs, StoreKit external purchase entitlements, and platform frameworks.
-   - When sources overlap, prioritize the App Review Guidelines for rejection likelihood and cite HIG as supporting design/UX evidence.
 
 5. Inspect code and configuration behind every high or medium scanner finding. Check whether the app has:
    - reviewer-accessible login/demo mode and live backend services
@@ -57,15 +57,19 @@ The default scanner output is compact; use it first. Use `--submitted-target <ta
    - an easy-to-find in-app way to initiate full account deletion for apps that allow account creation
    - moderation, reporting, blocking, and abuse handling for user-generated content
    - accurate metadata, screenshots, age rating, support URL, and review notes
+   - creative assets evaluated under their applicable metadata rules, separately from app-in-use screenshots and previews
+   - feature flags, remote configuration, and review/demo behavior that disclose the submitted app's functionality rather than concealing it
+
+Check applicable recent policy changes even when the scanner emits no finding for them. Use available native Xcode Simulator tools or existing app-owned UI tests to inspect reviewer-facing flows when relevant to the requested review. State the tested build/state and preserve screenshots or replay results; local UI observations do not prove App Store Connect configuration or policy compliance.
 
 ## Token Discipline
 
 - Start with compact scanner output and the target matrix; do not paste full JSON or full markdown into the final answer.
 - Scope the scanner with `--submitted-target` when multiple Xcode targets exist, especially if the repo includes examples, admin tools, fixtures, or tests.
 - For diff reviews, lead with `new_findings` and `changed_file_findings`; keep existing unchanged findings secondary unless they are blocking release readiness.
-- Load only `apple-platform-risk-areas.md`, the platform reference(s) matching the target matrix, and `app-store-connect-artifacts.md` if metadata evidence is missing.
+- Load `current-policy.md`, `apple-platform-risk-areas.md`, the platform reference(s) matching the target matrix, and `app-store-connect-artifacts.md` if metadata evidence is missing.
 - Quote only the highest-value evidence lines for each reported risk. Use finding IDs to refer back to scanner output.
-- Browse or cite Apple docs only for current high-risk or policy-sensitive conclusions; prefer the App Review Guidelines first, then HIG or implementation docs.
+- Always perform the current-source check. Read the relevant live sections without pasting entire guidelines into the report, and cite the official section supporting each policy-dependent finding.
 
 ## Reporting Format
 
@@ -81,11 +85,18 @@ Lead with risks, not a generic summary. Use this structure:
 - Severity: Blocking Risk | Likely Review Risk | Needs Verification | Low Signal
 - Confidence: High | Medium | Low
 - Evidence: <file:line or config key>
+- Policy basis: <official section link and applicable conditions>
 - Likely reviewer concern: <short explanation>
 - Recommended fix: <specific code/config/review-note action>
 
 ## Missing Evidence
 - <metadata, screenshots, review notes, privacy answers, subscription config, or backend access not available in the repo>
+
+## Policy Sources
+- Guidelines: <official URL>, retrieved <date>; Apple revision <displayed date or not stated>
+- Update notice: <official URL and publication date, or unavailable>
+- Relevant changes and applicability: <sections checked, platform/storefront/distribution conditions, and any effective dates>
+- Retrieval gaps: <unavailable sources and policy conclusions left as Needs Verification, or none>
 
 ## Scanner Notes
 - <summarize scanner output and any false positives dismissed>

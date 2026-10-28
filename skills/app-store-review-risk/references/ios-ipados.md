@@ -13,7 +13,7 @@ Use after the target matrix identifies an iOS or iPadOS app target.
 - Permission purpose strings must be specific and tied to visible features.
 - App Privacy answers and `PrivacyInfo.xcprivacy` must match SDKs, analytics, tracking, and required-reason API use.
 - StoreKit must handle purchase, current entitlement, restore, subscription state, refunds/cancellation information, and review notes.
-- External purchase/account links require storefront-specific review. United States storefront apps currently do not need the external-purchase-link entitlements for buttons, links, or calls to action; other storefronts may require an entitlement, region eligibility, disclosures, or may prohibit steering.
+- External purchase/account links require a live, storefront-specific policy check, including app category, permitted destination, entitlement approval, disclosures, and effective dates. Follow `current-policy.md`; do not carry a cached United States rule into every storefront.
 - Third-party/social login for a primary account needs an equivalent privacy-preserving login option under Guideline 4.8 unless an exception applies; do not reduce this check to provider-name detection alone.
 - Account creation requires an easy-to-find in-app way to initiate deletion of the full account and associated data. If completion occurs on the web, link directly to that page; ordinary apps should not require a generic support flow.
 - UGC requires filtering, reporting, blocking, abuse response, contact information, and reviewer-accessible test content.

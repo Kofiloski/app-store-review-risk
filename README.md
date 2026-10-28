@@ -11,6 +11,8 @@ Catch likely App Store rejection risks in an Xcode repository or pull request be
 
 `app-store-review-risk` combines a deterministic static scanner with an agent review workflow. It checks Apple-platform source, project settings, metadata, privacy declarations, entitlements, StoreKit flows, account handling, and submission artifacts without pretending that a heuristic can guarantee approval.
 
+For every agent review, the skill retrieves Apple's live App Review Guidelines and latest official update notice, reads applicable sections and exceptions, and records the retrieval date separately from Apple's revision date. If sources are unavailable, it discloses the gap and leaves dependent policy conclusions as `Needs Verification`. The static scanner itself does not fetch policy updates; its output is evidence to investigate rather than proof of compliance with the latest rules.
+
 **Private by design:** the default static scanner has no network integration and does not upload source code or findings. Optional `--xcodebuild` mode invokes the repository's local Xcode tooling and is subject to that project's package-resolution behavior. When used in GitHub Actions, the scanner runs inside the workflow runner under that repository's normal GitHub Actions controls.
 
 Part of an open-source Apple quality toolkit: [make the UI automation-ready](https://github.com/Kofiloski/ios-ui-testability-contract-skill), [exercise it in iOS Simulator with an AI planner](https://github.com/Kofiloski/ios-ai-ui-check), then preflight the release here.
@@ -34,7 +36,8 @@ Then ask your coding agent:
 ```text
 Review this iOS app before App Store submission. Check the submitted target and
 current Git diff for privacy, permissions, StoreKit, account, metadata, and
-other likely rejection risks. Use $app-store-review-risk and cite file evidence.
+other likely rejection risks against Apple's current guidelines and latest update
+notice. Use $app-store-review-risk and cite file evidence and policy sources.
 ```
 
 The public bundle lives at `skills/app-store-review-risk/`, matching its frontmatter name and the Agent Skills discovery convention. The bundle contains only agent instructions, UI metadata, and focused references; the CLI and GitHub Action remain versioned at the repository root. A root `SKILL.md` compatibility entry point remains for older direct-clone installs, while new installs should use the nested package.
@@ -90,6 +93,7 @@ The path is shortened in the README; [`examples/demo-output.txt`](https://github
 - **Diff-aware:** separate new, changed-file, and resolved risks so existing unrelated findings do not automatically block a pull request.
 - **Apple-platform aware:** cover iOS, iPadOS, macOS, Mac Catalyst, watchOS, tvOS, visionOS, TestFlight, and notarization paths.
 - **Agent-ready:** compact text and JSON formats keep the first pass small while platform references support deeper review only where needed.
+- **Current policy sources:** the skill checks live guidance, including relevant changes the scanner may not recognize, and cites the official sections supporting policy findings.
 
 ## Run in GitHub Actions
 
@@ -111,7 +115,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: Kofiloski/app-store-review-risk@v0.3.1
+      - uses: Kofiloski/app-store-review-risk@v0.3.2
         with:
           path: .
           submitted-target: MyApp
@@ -154,7 +158,7 @@ uvx app-store-review-risk . --submitted-target MyApp
 Install an immutable GitHub release directly:
 
 ```bash
-pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.1"
+pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.2"
 ```
 
 From a local clone:
@@ -223,9 +227,10 @@ Treat findings as investigation leads. Inspect the cited source and App Store Co
 
 This tool cannot guarantee App Store, TestFlight, or notarization approval. Apple documentation, App Store Connect configuration, and App Review remain the source of truth.
 
-Always verify high-impact conclusions against current official guidance:
+For every agent review, retrieve the current App Review Guidelines and latest official update notice, then verify policy-dependent conclusions against the applicable live sections:
 
 - [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
+- [Apple Developer News](https://developer.apple.com/news/) for the latest guideline-update notice
 - [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines)
 - relevant Apple Developer documentation and App Store Connect help
 
@@ -235,6 +240,7 @@ External purchase and account links remain storefront-specific. Guideline 4.8 de
 
 - `skills/app-store-review-risk/SKILL.md`: published agent workflow, reporting format, and review discipline
 - `skills/app-store-review-risk/agents/` and `skills/app-store-review-risk/references/`: skill UI metadata and focused platform guidance
+- `docs/skill-maintenance.md`: canonical skill location, toolkit synchronization, and verification boundaries
 - `src/app_store_review_risk/`: installable CLI package
 - `action.yml` and `scripts/run-action.sh`: composite GitHub Action entry point
 - `examples/demo-app/` and `examples/demo-output.txt`: reproducible scanner demonstration

@@ -13,12 +13,14 @@ Privacy: local analysis; the scanner does not upload source code or findings. Op
 - An App Store rejection mentions privacy, permissions, login, account deletion, StoreKit, subscriptions, user-generated content, metadata, or completeness.
 - A pull request needs a target-aware or diff-aware App Review risk check.
 - An agent needs file-backed evidence before giving App Review remediation advice.
+- A review needs Apple's current guidelines and latest update notice, with dated sources and disclosure when live guidance is unavailable.
 
 ## Agent entry point
 
 - skills/app-store-review-risk/SKILL.md — trigger metadata, review workflow, source discipline, and reporting contract.
 - skills/app-store-review-risk/agents/openai.yaml — user-facing skill metadata.
 - skills/app-store-review-risk/references/apple-platform-risk-areas.md — shared risk map.
+- skills/app-store-review-risk/references/current-policy.md — live-source retrieval, policy applicability, offline fallback, and source reporting.
 - skills/app-store-review-risk/references/{ios-ipados,macos,watchos,tvos,visionos}.md — platform-specific checks.
 - skills/app-store-review-risk/references/app-store-connect-artifacts.md — metadata and reviewer-access artifacts.
 
@@ -29,7 +31,7 @@ Install:
 
 Suggested prompt:
 
-    Review this iOS app before App Store submission. Use $app-store-review-risk, scope the submitted target and current diff, and cite file evidence for every likely rejection risk.
+    Review this iOS app before App Store submission against Apple's current guidelines and latest update notice. Use $app-store-review-risk, scope the submitted target and current diff, and cite file evidence and policy sources for every likely rejection risk.
 
 ## Deterministic scanner
 
@@ -43,7 +45,7 @@ Install the CLI persistently:
 
 Install an immutable GitHub release directly:
 
-    pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.1"
+    pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.2"
 
 Common commands:
 
@@ -53,7 +55,7 @@ Common commands:
     app-store-review-risk . --xcodebuild --scheme MyScheme
     app-store-review-risk . --format compact-json
 
-The default compact format is preferred for an agent's first pass. Treat findings as leads, inspect cited files, and verify change-prone policy conclusions against current Apple documentation.
+The default compact format is preferred for an agent's first pass. Treat findings as leads and inspect cited files. For every agent review, fetch current Apple guidance and the latest update notice, read applicable sections, and record retrieval and revision dates. The static CLI remains offline and does not update policy rules automatically.
 
 ## GitHub Action
 
