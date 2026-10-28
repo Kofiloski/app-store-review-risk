@@ -1,5 +1,6 @@
 # App Store Review Risk
 
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-View_Action-blue?logo=github)](https://github.com/marketplace/actions/app-store-review-risk)
 [![CI](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kofiloski/app-store-review-risk/actions/workflows/ci.yml)
 [![GitHub release](https://img.shields.io/github/v/release/Kofiloski/app-store-review-risk)](https://github.com/Kofiloski/app-store-review-risk/releases)
 [![PyPI](https://img.shields.io/pypi/v/app-store-review-risk)](https://pypi.org/project/app-store-review-risk/)

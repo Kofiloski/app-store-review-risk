@@ -3,6 +3,7 @@ summary: Keep the canonical review skill, toolkit copy, and release metadata ali
 read_when:
   - Updating the review skill or its policy references
   - Synchronizing the skill with ios-release-quality-toolkit
+  - Releasing the GitHub Action or updating its Marketplace listing
 ---
 
 # Review skill maintenance
@@ -14,3 +15,5 @@ read_when:
 The agent workflow fetches current Apple guidelines and the latest official update notice on every review. `references/current-policy.md` owns that procedure. The static CLI remains offline; neither its findings nor bundled references establish a current-policy baseline. Native Xcode tools can provide local observations but do not prove App Store Connect configuration or approval.
 
 Run `./scripts/check-skill.sh`, `python3 scripts/check-release-version.py <tag>`, the skill-creator validator for the nested skill, and `docs-list . --strict`. The repository's version tag releases the skill and source on GitHub and dispatches the existing PyPI workflow for the CLI. Verify each channel separately; a published GitHub release does not establish successful PyPI publication.
+
+Also verify the [GitHub Marketplace listing](https://github.com/marketplace/actions/app-store-review-risk) after an Action release. If the intended version is missing, edit that existing GitHub release, select **Publish this Action to the GitHub Marketplace**, confirm the categories, and save with **Update release**. Follow [GitHub's publishing instructions](https://docs.github.com/en/actions/how-tos/create-and-publish-actions/publish-in-github-marketplace), then confirm the public listing shows the intended version and links to this repository. A successful release workflow alone does not establish Marketplace publication. Documentation-only follow-ups do not require moving an existing release tag or publishing another package version.
