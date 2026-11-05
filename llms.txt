@@ -67,6 +67,13 @@ The root action.yml installs the repository package and invokes scripts/run-acti
 - PyPI publishes only the optional Python CLI wheel and source distribution from that same release tag.
 - A manual PyPI retry checks out and validates an existing tag; it does not publish a second skill release.
 
+## Documentation
+
+- docs/usage.md — agent/CLI installation, scanner commands, output formats, real example, and GitHub Actions.
+- docs/review-scope.md — coverage, current-policy sourcing, privacy, and limitations.
+- docs/development.md — source layout, validation, and GitHub/PyPI release channels.
+- docs/skill-maintenance.md — canonical skill, toolkit synchronization, and Marketplace verification.
+
 ## Demonstration and validation
 
 - examples/demo-app — intentionally incomplete iOS fixture.

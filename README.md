@@ -8,256 +8,60 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Kofiloski/app-store-review-risk/blob/main/LICENSE)
 [![skills.sh](https://skills.sh/b/Kofiloski/app-store-review-risk)](https://skills.sh/Kofiloski/app-store-review-risk)
 
-Catch likely App Store rejection risks in an Xcode repository or pull request before Apple sees the build—locally, target-aware, and with file-level evidence an AI coding agent can verify and help fix.
+Find likely App Store rejection risks in an Apple app repository or pull request, with stable finding IDs and file-level evidence.
 
-`app-store-review-risk` combines a deterministic static scanner with an agent review workflow. It checks Apple-platform source, project settings, metadata, privacy declarations, entitlements, StoreKit flows, account handling, and submission artifacts without pretending that a heuristic can guarantee approval.
+The local scanner checks privacy manifests, permissions, entitlements, StoreKit, account handling, and submission artifacts. The agent skill adds contextual review against Apple's current guidelines and latest update notice.
 
-For every agent review, the skill retrieves Apple's live App Review Guidelines and latest official update notice, reads applicable sections and exceptions, and records the retrieval date separately from Apple's revision date. If sources are unavailable, it discloses the gap and leaves dependent policy conclusions as `Needs Verification`. The static scanner itself does not fetch policy updates; its output is evidence to investigate rather than proof of compliance with the latest rules.
-
-**Private by design:** the default static scanner has no network integration and does not upload source code or findings. Optional `--xcodebuild` mode invokes the repository's local Xcode tooling and is subject to that project's package-resolution behavior. When used in GitHub Actions, the scanner runs inside the workflow runner under that repository's normal GitHub Actions controls.
-
-Part of an open-source Apple quality toolkit: [make the UI automation-ready](https://github.com/Kofiloski/ios-ui-testability-contract-skill), [exercise it in iOS Simulator with an AI planner](https://github.com/Kofiloski/ios-ai-ui-check), then preflight the release here.
-
-## 30-Second Agent Preflight
-
-Install the skill with the open Agent Skills CLI:
-
-```bash
-npx skills add https://github.com/Kofiloski/app-store-review-risk --skill app-store-review-risk
-```
-
-Or install it with GitHub CLI:
-
-```bash
-gh skill install Kofiloski/app-store-review-risk app-store-review-risk --agent codex --scope user
-```
-
-Then ask your coding agent:
-
-```text
-Review this iOS app before App Store submission. Check the submitted target and
-current Git diff for privacy, permissions, StoreKit, account, metadata, and
-other likely rejection risks against Apple's current guidelines and latest update
-notice. Use $app-store-review-risk and cite file evidence and policy sources.
-```
-
-The public bundle lives at `skills/app-store-review-risk/`, matching its frontmatter name and the Agent Skills discovery convention. The bundle contains only agent instructions, UI metadata, and focused references; the CLI and GitHub Action remain versioned at the repository root. A root `SKILL.md` compatibility entry point remains for older direct-clone installs, while new installs should use the nested package.
-
-## 30-Second CLI Preflight
+## Run a preflight
 
 ```bash
 uvx app-store-review-risk . --submitted-target MyApp
 ```
 
-For a persistent command, run `pipx install app-store-review-risk`. The scanner is packaged for Python 3.10 and newer, and PyPI is the low-friction CLI channel; GitHub remains the canonical source for the Agent Skill, Action, release history, and development.
+For a persistent command, use `pipx install app-store-review-risk`. Python 3.10 or newer is required. [Installation, diff scans, output formats, and CI](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/usage.md).
 
-## Why GitHub and PyPI Are Separate
+## Use the agent skill
 
-One version tag serves three related deliverables, but they are distributed through two channels:
+```bash
+gh skill install Kofiloski/app-store-review-risk \
+  app-store-review-risk@v0.3.3 --agent codex --scope user
+```
 
-- The GitHub release versions the Agent Skill in `skills/app-store-review-risk/`, the root composite action, and the source repository. Installing the skill with `gh skill install` or `npx skills add` does not involve PyPI.
-- The PyPI workflow publishes only the optional `app-store-review-risk` Python CLI wheel and source distribution. It runs automatically when the GitHub release is published.
-
-If Trusted Publisher setup was missing or PyPI was temporarily unavailable, manually dispatch `Publish to PyPI` from the `main` branch and enter the existing release tag. The workflow checks out that exact tag, verifies it matches all package version metadata, rebuilds it, and skips files PyPI already accepted. A manual retry never creates or replaces the GitHub release or Agent Skill.
-
-Pushing an exact `vX.Y.Z` tag runs the repository-owned release workflow, which validates the tag, creates the GitHub release, and dispatches the PyPI workflow with GitHub's built-in token. Maintainers do not need to authorize GitHub CLI with personal or organization scopes.
-
-For the first PyPI release, register a pending Trusted Publisher at <https://pypi.org/manage/account/publishing/> with project `app-store-review-risk`, owner `Kofiloski`, repository `app-store-review-risk`, workflow `publish-pypi.yml`, and environment `pypi`. These values must match exactly; no API token is stored in GitHub.
-
-## Real Scanner Output
-
-This finding comes from the checked-in [`examples/demo-app`](https://github.com/Kofiloski/app-store-review-risk/tree/main/examples/demo-app) fixture, not a mocked interface:
+Then ask:
 
 ```text
-# Apple App Review Risk Scan Summary
+Use $app-store-review-risk to review this app's submitted target and current diff.
+Verify risks against current Apple guidance and cite file evidence and sources.
+```
 
-Target: `examples/demo-app`
-Platforms: iOS (high), iPadOS (high)
-Findings: HIGH=1, MEDIUM=0, LOW=1, INFO=0
+The skill uses the open Agent Skills format. [Other installers](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/usage.md#agent-skill-installation).
 
+## See a real finding
+
+The checked-in [demo app](https://github.com/Kofiloski/app-store-review-risk/tree/main/examples/demo-app) intentionally uses the camera without its permission description. The scanner reports:
+
+```text
 - HIGH `permissions-missing-nscamerausagedescription`: Potential protected-resource use without NSCameraUsageDescription (medium)
   evidence: `Sources/CameraView.swift:4: _ = AVCaptureDevice.default(for: .video)`
 ```
 
-Reproduce the complete output:
+[Reproduce the scan and view its complete output](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/usage.md#real-scanner-output).
 
-```bash
-scripts/scan_apple_app_review_risks.py examples/demo-app --format compact --max-findings 4
-```
+## Scope and limits
 
-The path is shortened in the README; [`examples/demo-output.txt`](https://github.com/Kofiloski/app-store-review-risk/blob/main/examples/demo-output.txt) contains the normalized complete result used by the test suite.
+The default scanner reads local source without network requests or uploads. Optional `--xcodebuild` mode uses the project's local Xcode tooling and may resolve packages. Static scanning works on Linux and macOS; Xcode mode requires macOS.
 
-## Why It Is More Than a Checklist
+Findings are investigation leads, not approval predictions. The scanner does not inspect compiled binaries or establish App Store Connect/backend state. The skill retrieves current Apple policy for every review; unavailable policy sources leave dependent conclusions as `Needs Verification`.
 
-- **Deterministic first pass:** the CLI produces stable finding IDs and exact evidence before an agent reasons about context.
-- **Target-aware:** scope source, plist, privacy manifest, and generated build-setting checks to the Xcode target being submitted.
-- **Diff-aware:** separate new, changed-file, and resolved risks so existing unrelated findings do not automatically block a pull request.
-- **Apple-platform aware:** cover iOS, iPadOS, macOS, Mac Catalyst, watchOS, tvOS, visionOS, TestFlight, and notarization paths.
-- **Agent-ready:** compact text and JSON formats keep the first pass small while platform references support deeper review only where needed.
-- **Current policy sources:** the skill checks live guidance, including relevant changes the scanner may not recognize, and cites the official sections supporting policy findings.
+## Documentation
 
-## Run in GitHub Actions
+| Need | Guide |
+| --- | --- |
+| Install, scan a target/diff, or use GitHub Actions | [Scanner usage](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/usage.md) |
+| Understand coverage, policy sourcing, and limitations | [Review scope](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/review-scope.md) |
+| Contribute, validate, or publish | [Development and releases](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/development.md) |
+| Maintain the canonical skill and toolkit copy | [Skill maintenance](https://github.com/Kofiloski/app-store-review-risk/blob/main/docs/skill-maintenance.md) |
 
-The repository is a root composite action. This example checks only App Review risks introduced or touched by a pull request:
+Companion tools: [UI Testability Contract](https://github.com/Kofiloski/ios-ui-testability-contract-skill) repairs XCUITest failures; [iOS AI UI Check](https://github.com/Kofiloski/ios-ai-ui-check) runs app-owned Simulator scenarios.
 
-```yaml
-name: App Store review risk
-
-on:
-  pull_request:
-
-permissions:
-  contents: read
-
-jobs:
-  preflight:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: Kofiloski/app-store-review-risk@v0.3.3
-        with:
-          path: .
-          submitted-target: MyApp
-          diff: ${{ github.event.pull_request.base.sha }}...${{ github.sha }}
-          fail-on: high
-```
-
-Static scans also work on Linux runners. Set `xcodebuild: true` only on a macOS runner, and provide `scheme`, `project`, or `workspace` when the repository needs explicit Xcode selection.
-
-## What It Covers
-
-- `Info.plist` permission descriptions and generated plist build settings
-- `PrivacyInfo.xcprivacy`, required-reason APIs, tracking, and privacy collection clues
-- entitlements, StoreKit, subscriptions, restore paths, and external purchase language
-- Guideline 4.8 login-option signals, account deletion, and UGC moderation clues
-- private API and placeholder-content signals
-- App Store Connect artifact gaps such as screenshots, review notes, privacy answers, support URLs, and demo access
-- multiple app targets, tests, extensions, examples, admin tools, and synchronized Xcode groups
-
-## Install Options
-
-With `pipx`:
-
-```bash
-pipx install app-store-review-risk
-```
-
-With `pip`:
-
-```bash
-python3 -m pip install app-store-review-risk
-```
-
-Run once without a persistent install:
-
-```bash
-uvx app-store-review-risk . --submitted-target MyApp
-```
-
-Install an immutable GitHub release directly:
-
-```bash
-pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.3"
-```
-
-From a local clone:
-
-```bash
-python3 -m pip install .
-```
-
-Without installing:
-
-```bash
-scripts/scan_apple_app_review_risks.py /path/to/apple-app
-```
-
-## Scanner Commands
-
-Scan an app repository:
-
-```bash
-app-store-review-risk /path/to/apple-app
-```
-
-Scope code and configuration findings to the submitted target:
-
-```bash
-app-store-review-risk /path/to/apple-app --submitted-target MyApp
-```
-
-Use Xcode for more exact target metadata:
-
-```bash
-app-store-review-risk /path/to/apple-app --xcodebuild --scheme MyScheme
-```
-
-Review risks introduced or touched by a Git diff:
-
-```bash
-app-store-review-risk /path/to/apple-app --diff origin/main...HEAD
-```
-
-Compare a release with the working tree or another committed ref:
-
-```bash
-app-store-review-risk /path/to/apple-app --base-ref v1.2.0
-app-store-review-risk /path/to/apple-app --base-ref v1.2.0 --head-ref v1.3.0
-```
-
-Fail a CI job on new or changed high-severity findings:
-
-```bash
-app-store-review-risk /path/to/apple-app --diff origin/main...HEAD --fail-on high
-```
-
-Working-tree comparisons include non-ignored untracked files. In diff mode, `--fail-on` applies to new findings and existing findings whose evidence touches changed files, rather than every unchanged finding in the repository.
-
-## Output Formats
-
-- `compact` is the default and is optimized for release and agent triage.
-- `compact-json` is structured while remaining token-conscious.
-- `markdown` produces a human-readable review report.
-- `json` includes the complete machine-readable scan result.
-
-Treat findings as investigation leads. Inspect the cited source and App Store Connect configuration before treating a heuristic signal as a real rejection risk.
-
-## Important Notice
-
-This tool cannot guarantee App Store, TestFlight, or notarization approval. Apple documentation, App Store Connect configuration, and App Review remain the source of truth.
-
-For every agent review, retrieve the current App Review Guidelines and latest official update notice, then verify policy-dependent conclusions against the applicable live sections:
-
-- [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
-- [Apple Developer News](https://developer.apple.com/news/) for the latest guideline-update notice
-- [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines)
-- relevant Apple Developer documentation and App Store Connect help
-
-External purchase and account links remain storefront-specific. Guideline 4.8 describes the privacy outcomes required of an equivalent login option rather than naming a single mandatory identity provider. The scanner deliberately reports these change-prone areas as items to verify, not automatic policy verdicts.
-
-## Repository Layout
-
-- `skills/app-store-review-risk/SKILL.md`: published agent workflow, reporting format, and review discipline
-- `skills/app-store-review-risk/agents/` and `skills/app-store-review-risk/references/`: skill UI metadata and focused platform guidance
-- `docs/skill-maintenance.md`: canonical skill location, toolkit synchronization, and verification boundaries
-- `src/app_store_review_risk/`: installable CLI package
-- `action.yml` and `scripts/run-action.sh`: composite GitHub Action entry point
-- `examples/demo-app/` and `examples/demo-output.txt`: reproducible scanner demonstration
-- `llms.txt`: compact machine-readable repository map
-- `CITATION.cff`: software citation metadata
-- `scripts/check-skill.sh`: full local validation
-
-## Limitations
-
-- Static heuristics can produce false positives or miss behavior behind runtime configuration, remote services, feature flags, or App Store Connect-only setup.
-- Symbolic links are not followed, so linked source outside the scanned tree needs separate review.
-- A repository cannot prove privacy answers, subscription products, entitlement approval, backend availability, or reviewer credentials unless those artifacts are present.
-- The source scanner does not inspect compiled `.ipa` or `.xcarchive` binaries.
-
-## Validate
-
-```bash
-./scripts/check-skill.sh
-```
+MIT licensed. [Agent discovery](https://github.com/Kofiloski/app-store-review-risk/blob/main/llms.txt) · [Citation metadata](https://github.com/Kofiloski/app-store-review-risk/blob/main/CITATION.cff).
