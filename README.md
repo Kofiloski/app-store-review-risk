@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: Kofiloski/app-store-review-risk@v0.3.2
+      - uses: Kofiloski/app-store-review-risk@v0.3.3
         with:
           path: .
           submitted-target: MyApp
@@ -159,7 +159,7 @@ uvx app-store-review-risk . --submitted-target MyApp
 Install an immutable GitHub release directly:
 
 ```bash
-pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.2"
+pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.3"
 ```
 
 From a local clone:

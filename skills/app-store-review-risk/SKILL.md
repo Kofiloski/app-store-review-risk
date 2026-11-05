@@ -31,7 +31,7 @@ app-store-review-risk /path/to/app/repo
 The published skill bundle intentionally does not duplicate the scanner package. If the CLI is missing, use this release-pinned ephemeral command only when network installation is authorized and `uvx` is available:
 
 ```bash
-uvx --from app-store-review-risk==0.3.2 app-store-review-risk /path/to/app/repo
+uvx --from app-store-review-risk==0.3.3 app-store-review-risk /path/to/app/repo
 ```
 
 Do not install from an unpinned branch. If neither the CLI nor authorized network installation is available, continue with the target matrix and file-backed manual review, and state that the deterministic scanner was not run.
@@ -61,6 +61,8 @@ The default scanner output is compact; use it first. Use `--submitted-target <ta
    - feature flags, remote configuration, and review/demo behavior that disclose the submitted app's functionality rather than concealing it
 
 Check applicable recent policy changes even when the scanner emits no finding for them. Use available native Xcode Simulator tools or existing app-owned UI tests to inspect reviewer-facing flows when relevant to the requested review. State the tested build/state and preserve screenshots or replay results; local UI observations do not prove App Store Connect configuration or policy compliance.
+
+When a reviewer-facing flow needs runtime evidence, read [references/runtime-evidence.md](references/runtime-evidence.md). Correlate UI observations with bounded logs or relevant saved state; keep diagnostic collection separate from the offline scanner and leave policy conclusions tied to current official sources.
 
 ## Token Discipline
 

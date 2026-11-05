@@ -45,7 +45,7 @@ Install the CLI persistently:
 
 Install an immutable GitHub release directly:
 
-    pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.2"
+    pipx install "git+https://github.com/Kofiloski/app-store-review-risk.git@v0.3.3"
 
 Common commands:
 

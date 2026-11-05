@@ -8,8 +8,8 @@ authors:
 repository-code: "https://github.com/Kofiloski/app-store-review-risk"
 url: "https://github.com/Kofiloski/app-store-review-risk"
 license: MIT
-version: 0.3.2
-date-released: 2026-10-28
+version: 0.3.3
+date-released: 2026-11-05
 keywords:
   - App Store Review
   - iOS
